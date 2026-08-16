@@ -47,6 +47,11 @@ internal sealed class AvaloniaOverlayWindow : Window
     private double _lastHeight;
     private bool _sizeInitialized;
 
+    // A mode-switch click that lands while Nova is genuinely busy can't
+    // switch immediately - remembered here and applied on the next tick
+    // once she's free.
+    private ActivationMode? _pendingModeSwitch;
+
     public AvaloniaOverlayWindow(NovaAssistant assistant, string repoRoot)
     {
         _assistant = assistant;
@@ -106,6 +111,7 @@ internal sealed class AvaloniaOverlayWindow : Window
         // this window - there's no other way to stop the voice pipeline
         // once the overlay is the only visible UI.
         var actions = new OverlaySkinActions(
+            SwitchActivationMode: SwitchActivationModeGuarded,
             SetEngaged: engaged => _assistant.SetEngaged(engaged),
             CycleSkin: CycleSkin,
             Close: () => Environment.Exit(0),
@@ -247,10 +253,17 @@ internal sealed class AvaloniaOverlayWindow : Window
 
     private void PushState()
     {
+        if (_pendingModeSwitch is { } pending && !_assistant.IsBusy)
+        {
+            _pendingModeSwitch = null;
+            _ = _assistant.SwitchActivationModeAsync(pending);
+        }
+
         var state = new OverlayState(
             IsBusy: _assistant.IsBusy,
             IsSpeaking: _assistant.IsSpeaking,
             Asleep: !_assistant.Engaged,
+            Mode: _assistant.Mode,
             Transcript: _assistant.SnapshotTranscript(),
             ChromeLinked: _assistant.ChromeLinked,
             GmailLinked: _assistant.GmailLinked,
@@ -280,6 +293,17 @@ internal sealed class AvaloniaOverlayWindow : Window
         }
 
         _credentialsPopup.ApplyConnectState(state.GoogleConnecting, state.GoogleConnectError);
+    }
+
+    private System.Threading.Tasks.Task SwitchActivationModeGuarded(ActivationMode mode)
+    {
+        if (_assistant.IsBusy)
+        {
+            _pendingModeSwitch = mode;
+            return System.Threading.Tasks.Task.CompletedTask;
+        }
+
+        return _assistant.SwitchActivationModeAsync(mode);
     }
 
     private void CycleSkin()

@@ -18,6 +18,7 @@ internal sealed class AuraSkin : IOverlaySkin
     private readonly TextBlock _wordmark;
     private readonly TextBlock _stateLabel;
     private readonly TextBlock _subLabel;
+    private readonly Button _modeButton;
     private readonly Button _sleepButton;
     private readonly Button _themeButton;
     private readonly Button[] _chromeButtons;
@@ -29,6 +30,7 @@ internal sealed class AuraSkin : IOverlaySkin
     private readonly TextBlock _chromeChipText;
     private readonly TextBlock _gmailChipText;
     private OverlaySkinActions? _actions;
+    private ActivationMode _mode = ActivationMode.Prompted;
     private bool _engaged = true;
     private bool _lightTheme = true;
     private AuraPalette _palette = AuraPalette.Light;
@@ -102,6 +104,25 @@ internal sealed class AuraSkin : IOverlaySkin
         // shape - Avalonia's Border.CornerRadius does no such clamping, so
         // a known fixed Height with CornerRadius = Height / 2 is the actual
         // capsule.
+        const double ModeButtonHeight = 30;
+        _modeButton = new Button
+        {
+            Content = "Prompted",
+            FontSize = 12,
+            FontWeight = FontWeight.SemiBold,
+            Foreground = Brushes.White,
+            // linear-gradient(120deg, accent, accent-2) in the mockup.
+            Background = MakeAngledGradient(AuraPalette.Accent, AuraPalette.Accent2, 30),
+            BorderThickness = new Thickness(0),
+            Height = ModeButtonHeight,
+            Padding = new Thickness(16, 0, 16, 0),
+            Margin = new Thickness(0, 10, 0, 0),
+            HorizontalAlignment = HorizontalAlignment.Center,
+            Cursor = new Cursor(StandardCursorType.Hand),
+        };
+        FlatButtonStyle.Apply(_modeButton, cornerRadius: ModeButtonHeight / 2);
+        _modeButton.Click += (_, _) => _actions?.SwitchActivationMode(_mode == ActivationMode.Prompted ? ActivationMode.KeyBind : ActivationMode.Prompted);
+
         _stateLabel = new TextBlock { Text = "listening…", FontSize = 18, HorizontalAlignment = HorizontalAlignment.Center, Margin = new Thickness(0, 8, 0, 2) };
         _subLabel = new TextBlock { Text = "just start talking", FontSize = 15, HorizontalAlignment = HorizontalAlignment.Center };
 
@@ -114,8 +135,16 @@ internal sealed class AuraSkin : IOverlaySkin
         // state; the dot dims to a flat grey when not actually connected.
         _chromeDot = new Ellipse { Width = 7, Height = 7, Margin = new Thickness(0, 0, 6, 0) };
         _gmailDot = new Ellipse { Width = 7, Height = 7, Margin = new Thickness(0, 0, 6, 0) };
-        _chromeChipText = new TextBlock { FontSize = 13 };
-        _gmailChipText = new TextBlock { FontSize = 13 };
+        // MaxWidth + ellipsis trimming, not an unconstrained auto-width pill -
+        // "Chrome connected"/"Gmail connected" side by side can run wider
+        // than the panel (272 DIP, minus the layout's own 18px margins),
+        // which a plain StackPanel doesn't wrap or clip - it just renders
+        // past the window's right edge. 76 leaves both chips (padding + dot
+        // + text) comfortably inside the available ~236px even at their
+        // longest, unlike WEB's fix (Grid star columns) which would stretch
+        // AURA's snug capsule shape into a full-width block instead.
+        _chromeChipText = new TextBlock { FontSize = 13, MaxWidth = 76, TextTrimming = TextTrimming.CharacterEllipsis };
+        _gmailChipText = new TextBlock { FontSize = 13, MaxWidth = 76, TextTrimming = TextTrimming.CharacterEllipsis };
         var chromeChipContent = new StackPanel { Orientation = Orientation.Horizontal };
         chromeChipContent.Children.Add(_chromeDot);
         chromeChipContent.Children.Add(_chromeChipText);
@@ -134,6 +163,7 @@ internal sealed class AuraSkin : IOverlaySkin
         stack.Children.Add(faceCanvas);
         stack.Children.Add(_stateLabel);
         stack.Children.Add(_subLabel);
+        stack.Children.Add(_modeButton);
         stack.Children.Add(_transcript.Root);
 
         // WEB's edge-to-edge chrome doesn't apply here - AURA's status row
@@ -162,6 +192,8 @@ internal sealed class AuraSkin : IOverlaySkin
     public void ApplyState(OverlayState state)
     {
         _engaged = !state.Asleep;
+        _mode = state.Mode;
+        _modeButton.Content = state.Mode == ActivationMode.Prompted ? "Prompted" : "Key Bind";
 
         _face.ApplyState(state.Asleep);
         _badge.ApplyState(state.IsSpeaking && !state.Asleep);

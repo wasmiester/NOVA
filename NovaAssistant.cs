@@ -270,10 +270,16 @@ internal sealed class NovaAssistant
     // all - the hotkey (TriggerReadyAcknowledgment) is the only way back to
     // engaged (true), normal respond-when-spoken-to behavior, until a sleep
     // phrase or the AFK idle timeout (see IdleTracker) puts her back to
-    // sleep. There's no more separate "comfort level" tier system - a
-    // spoken sleep phrase and the overlay's sleep button both just flip
-    // this one flag.
+    // sleep. A spoken sleep phrase and the overlay's sleep button both just
+    // flip this one flag directly; switching ActivationMode also resets it
+    // to that mode's own default (see SwitchActivationModeAsync).
     private bool _engaged = true;
+
+    // Which of the two listening behaviors is active - see ActivationMode's
+    // own doc comment. Defaults to Prompted (today's plain
+    // respond-when-spoken-to baseline) so nothing changes for anyone who
+    // never touches this.
+    private ActivationMode _activationMode = ActivationMode.Prompted;
 
     public NovaAssistant(
         AnthropicClient client,
@@ -384,6 +390,10 @@ internal sealed class NovaAssistant
     // See _engaged's own doc comment above - the overlay uses this to
     // show/hide its asleep state.
     internal bool Engaged => _engaged;
+
+    // See ActivationMode's own doc comment - the overlay's mode button
+    // reads this to show which mode is current.
+    internal ActivationMode Mode => _activationMode;
 
     // For the overlay's "CHROME LINKED"/"GMAIL LINKED" status chips.
     // ChromeLinked reflects a real, live connection state (flips back off
@@ -873,9 +883,19 @@ internal sealed class NovaAssistant
         RecordTranscript(isUser: true, input);
         Volatile.Write(ref _currentActivity, null); // transcribing's done - the tool loop sets its own activity from here
 
-        // The sleep phrase is checked locally, before anything reaches
-        // Claude - keeps going dormant free and instant rather than a real
-        // conversational turn.
+        // Mode-switch and the sleep phrase are both checked locally, before
+        // anything reaches Claude - keeps them free and instant rather than
+        // a real conversational turn. Mode-switch first: "switch to key
+        // bind mode" shouldn't also get evaluated as a sleep phrase (it
+        // isn't one, but checking order is what guarantees that stays true
+        // as phrasing evolves).
+        if (VoiceControlPhrases.TryDetectModeSwitch(input) is { } newMode)
+        {
+            await SwitchActivationModeAsync(newMode);
+            Volatile.Write(ref _isBusy, 0);
+            return;
+        }
+
         if (VoiceControlPhrases.ContainsSleepPhrase(input))
         {
             _engaged = false;
@@ -887,6 +907,49 @@ internal sealed class NovaAssistant
 
         await ProcessTextInputAsync(input);
     }
+
+    // internal (not private) so the overlay's mode button can call the exact
+    // same state-mutation + TTS-confirmation logic a voice-triggered switch
+    // uses, rather than duplicating it. Sets IsBusy for its own duration
+    // (unlike its only other caller, ProcessUtteranceAsync, which already
+    // runs under DispatchUtterance's IsBusy=1) so the overlay button path -
+    // which has no such wrapper - can't fire a second concurrent switch
+    // while the first is still speaking its confirmation; without this, two
+    // clicks (or a click landing mid-speech) would race on _turnCts and
+    // cause overlapping/doubled TTS playback.
+    internal async Task SwitchActivationModeAsync(ActivationMode mode)
+    {
+        Volatile.Write(ref _isBusy, 1);
+        try
+        {
+            if (mode == _activationMode)
+            {
+                await SpeakLocalReplyAsync($"Already in {DescribeMode(mode)} mode.");
+                return;
+            }
+
+            _activationMode = mode;
+            // Switching mode resets to that mode's own default - Prompted
+            // starts engaged, KeyBind starts asleep (see ActivationMode's
+            // own doc comment). This is itself an active interaction either
+            // way, so the confirmation always gets spoken regardless of
+            // which direction _engaged just moved.
+            _engaged = mode == ActivationMode.Prompted;
+            Console.WriteLine($"\n[activation mode -> {mode}]\n");
+            await SpeakLocalReplyAsync($"Switched to {DescribeMode(mode)} mode.");
+        }
+        finally
+        {
+            Volatile.Write(ref _isBusy, 0);
+        }
+    }
+
+    private static string DescribeMode(ActivationMode mode) => mode switch
+    {
+        ActivationMode.Prompted => "prompted",
+        ActivationMode.KeyBind => "key bind",
+        _ => mode.ToString(),
+    };
 
     // The overlay's sleep/wake button - the manual equivalent of the sleep
     // phrase handling in ProcessUtteranceAsync above (waking is handled

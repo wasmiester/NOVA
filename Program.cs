@@ -293,8 +293,8 @@ internal static class Program
         // spoken sleep phrase. See Input/IdleTracker.cs.
         using var idleTracker = new IdleTracker(() => assistant.Engaged, () => assistant.SetEngaged(false));
 
-        Console.WriteLine("Nova - step 17 (engaged/asleep, hotkey-only wake, AFK auto-sleep)");
-        Console.WriteLine("Just start talking - talk over her any time to interrupt.");
+        Console.WriteLine("Nova - step 17 (Prompted/Key Bind activation modes, hotkey-only wake, AFK auto-sleep)");
+        Console.WriteLine("Prompted mode (default): just start talking - talk over her any time to interrupt.");
         if (hotkey.Registered)
         {
             Console.WriteLine("Press Ctrl+Alt+Space any time to get Nova's attention, including waking her from asleep.");
@@ -305,6 +305,7 @@ internal static class Program
         }
 
         Console.WriteLine("Say \"take a break\"/\"go to sleep\" to put her to sleep - Ctrl+Alt+Space is the only way to wake her back up.");
+        Console.WriteLine("Say \"switch to key bind mode\" to require the hotkey before she'll listen at all - good for avoiding accidental triggers from ambient conversation.");
         Console.WriteLine("Ctrl+C to quit.\n");
 
         await Task.Delay(Timeout.Infinite);

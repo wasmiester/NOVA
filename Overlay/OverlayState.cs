@@ -10,6 +10,7 @@ internal readonly record struct OverlayState(
     bool IsBusy,
     bool IsSpeaking,
     bool Asleep,      // !Engaged - the hotkey is the only way back from this
+    ActivationMode Mode,
     IReadOnlyList<TranscriptEntry> Transcript,
     bool ChromeLinked,
     bool GmailLinked,

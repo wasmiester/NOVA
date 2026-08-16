@@ -1,4 +1,5 @@
 using System;
+using System.Threading.Tasks;
 
 namespace Nova;
 
@@ -7,6 +8,7 @@ namespace Nova;
 // via AttachActions - keeps all 3 skin implementations total strangers to
 // NovaAssistant itself.
 internal sealed record OverlaySkinActions(
+    Func<ActivationMode, Task> SwitchActivationMode, // caller (skin) must gate on !IsBusy first
     Action<bool> SetEngaged,
     Action CycleSkin,
     Action Close,

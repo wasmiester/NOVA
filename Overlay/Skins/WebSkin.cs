@@ -25,9 +25,11 @@ internal sealed class WebSkin : IOverlaySkin
     private readonly TextBlock _logHead;
     private readonly TextBlock _chromeChip;
     private readonly TextBlock _gmailChip;
+    private readonly Button _modeButton;
     private readonly Button _sleepButton;
     private readonly TranscriptPanel _transcript;
     private OverlaySkinActions? _actions;
+    private ActivationMode _mode = ActivationMode.Prompted;
     private bool _engaged = true;
 
     // Exact hex values from the source mockup (--panel, --panel-2, --edge-lo,
@@ -129,6 +131,24 @@ internal sealed class WebSkin : IOverlaySkin
         // was dropped per direct request - read as visual noise in practice.
         _subLabel = new TextBlock { Text = "JUST START TALKING", Foreground = TextLoBrush, FontFamily = WebFont, FontSize = 14, HorizontalAlignment = HorizontalAlignment.Center };
 
+        _modeButton = new Button
+        {
+            Content = "PROMPTED",
+            FontFamily = WebFont,
+            FontWeight = FontWeight.Bold,
+            FontSize = 12,
+            Foreground = TextBrush,
+            Background = PanelBrush,
+            BorderBrush = EdgeBrush,
+            BorderThickness = new Thickness(2),
+            Padding = new Thickness(7.2, 4.8, 7.2, 4.8),
+            Margin = new Thickness(0, 10, 0, 0),
+            HorizontalAlignment = HorizontalAlignment.Center,
+            Cursor = new Cursor(StandardCursorType.Hand),
+        };
+        FlatButtonStyle.Apply(_modeButton, cornerRadius: 0, pixelShadowColor: EdgeBrush.Color);
+        _modeButton.Click += (_, _) => _actions?.SwitchActivationMode(_mode == ActivationMode.Prompted ? ActivationMode.KeyBind : ActivationMode.Prompted);
+
         // .web .status-bar in the mockup: border-top: 4px solid var(--edge-lo);
         // background: var(--panel-2); box-shadow: inset 0 3px 0 var(--edge-hi) -
         // the drag-bar's chrome treatment mirrored at the bottom, holding two
@@ -169,6 +189,7 @@ internal sealed class WebSkin : IOverlaySkin
         innerContent.Children.Add(faceGrid);
         innerContent.Children.Add(_stateLabel);
         innerContent.Children.Add(_subLabel);
+        innerContent.Children.Add(_modeButton);
         innerContent.Children.Add(_logHead);
         innerContent.Children.Add(_transcript.Root);
 
@@ -233,6 +254,8 @@ internal sealed class WebSkin : IOverlaySkin
     public void ApplyState(OverlayState state)
     {
         _engaged = !state.Asleep;
+        _mode = state.Mode;
+        _modeButton.Content = state.Mode == ActivationMode.Prompted ? "PROMPTED" : "KEY BIND";
 
         _ring.IsSpeaking = state.IsSpeaking;
         _ring.IsAsleep = state.Asleep;

@@ -47,6 +47,7 @@ internal sealed class ArcSkin : IOverlaySkin
     private readonly TextBlock _wordmark;
     private readonly TextBlock _stateLabel;
     private readonly TextBlock _subLabel;
+    private readonly Button _modeButton;
     private readonly Button _sleepButton;
     private readonly Button _themeButton;
     private readonly Button _maximizeButton;
@@ -54,6 +55,7 @@ internal sealed class ArcSkin : IOverlaySkin
     private readonly TextBlock _chromeChip;
     private readonly TextBlock _gmailChip;
     private OverlaySkinActions? _actions;
+    private ActivationMode _mode = ActivationMode.Prompted;
     private bool _engaged = true;
     private bool _goldTheme = true;
 
@@ -121,6 +123,22 @@ internal sealed class ArcSkin : IOverlaySkin
             HorizontalAlignment = HorizontalAlignment.Center,
         };
 
+        _modeButton = new Button
+        {
+            Content = "PROMPTED",
+            FontFamily = new FontFamily("Consolas"),
+            FontSize = 11,
+            Foreground = _warnBrush,
+            Background = _warnBgBrush,
+            BorderBrush = _warnBorderBrush,
+            Padding = new Thickness(7, 4, 7, 4),
+            Margin = new Thickness(0, 12, 0, 0),
+            HorizontalAlignment = HorizontalAlignment.Center,
+            Cursor = new Cursor(StandardCursorType.Hand),
+        };
+        FlatButtonStyle.Apply(_modeButton, cornerRadius: 0);
+        _modeButton.Click += (_, _) => _actions?.SwitchActivationMode(_mode == ActivationMode.Prompted ? ActivationMode.KeyBind : ActivationMode.Prompted);
+
         // .arc .status-bar { border-top: 1px solid var(--hair); ... } .arc
         // .chip { border: 1px solid var(--hair); color: var(--text-lo); }
         // .arc .chip b { color: var(--accent); } - bordered (not filled)
@@ -143,6 +161,7 @@ internal sealed class ArcSkin : IOverlaySkin
         stack.Children.Add(_face);
         stack.Children.Add(_stateLabel);
         stack.Children.Add(_subLabel);
+        stack.Children.Add(_modeButton);
         stack.Children.Add(_transcript.Root);
         stack.Children.Add(statusBar);
 
@@ -180,6 +199,8 @@ internal sealed class ArcSkin : IOverlaySkin
     public void ApplyState(OverlayState state)
     {
         _engaged = !state.Asleep;
+        _mode = state.Mode;
+        _modeButton.Content = state.Mode == ActivationMode.Prompted ? "PROMPTED" : "KEY BIND";
         _face.IsAsleep = state.Asleep;
 
         // While she's silently working (reading a page, filling a field,

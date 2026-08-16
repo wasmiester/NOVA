@@ -35,10 +35,12 @@
 
 ## Engaged/asleep state model
 
-Nova has one operating mode with a single flag, not a ladder of named "comfort levels" (an earlier 3-tier design — see [DESIGN_DECISIONS.md](DESIGN_DECISIONS.md) for why it was scrapped):
+Nova has two activation modes, not a ladder of named "comfort levels" (an earlier 3-tier design — see [DESIGN_DECISIONS.md](DESIGN_DECISIONS.md) for why it was scrapped), switched by voice ("switch to key bind mode") or the overlay's mode button:
 
-- **Engaged (awake)** — the default. Responds to any speech, reasons about the natural next step once a task finishes, and proactively watches files/terminal/screen, contextually rather than constantly.
-- **Asleep (dormant)** — triggered by a spoken sleep phrase, the overlay's sleep button, or 3 hours of system-wide AFK idle (`GetLastInputInfo` polled once a minute). While asleep, Nova doesn't transcribe or react to speech at all — no wake word, nothing sent to Claude — except email/calendar, the deliberate exceptions that keep running regardless. The **hotkey is the only way back to engaged**.
+- **Prompted** — the default. Starts engaged: responds to any speech immediately, no hotkey needed.
+- **Key Bind** — starts asleep. Nothing is transcribed or reacted to until the hotkey is pressed, specifically so ambient conversation near the machine can never accidentally trigger a response.
+
+Orthogonal to the mode itself is the engaged/asleep flag it defaults into. Once engaged, both modes behave identically — full listening, reasoning about the natural next step once a task finishes, proactively watching files/terminal/screen contextually rather than constantly — until a spoken sleep phrase, the overlay's sleep button, or 3 hours of system-wide AFK idle (`GetLastInputInfo` polled once a minute) puts Nova back to sleep. While asleep, in either mode, Nova doesn't transcribe or react to speech at all — no wake word, nothing sent to Claude — except email/calendar, the deliberate exceptions that keep running regardless. The **hotkey is the only way back to engaged**, in both modes; switching modes itself also immediately applies that mode's default (switching to Prompted wakes Nova up, switching to Key Bind puts her to sleep).
 
 Screen/window reading is contextual rather than always-on: `read_screen`/`interact_desktop` take an optional window-title match so Claude can target a specific open window — including minimized or behind others — without disturbing the foreground. Interacting only brings a window forward when a control lacks a direct UI Automation pattern and has to fall back to a real simulated click/keystroke, which needs actual OS focus; the pattern-based path never touches the screen at all.
 
