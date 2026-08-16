@@ -158,12 +158,30 @@ internal sealed class AuraSkin : IOverlaySkin
         chipsRow.Children.Add(_chromeChipBorder);
         chipsRow.Children.Add(_gmailChipBorder);
 
-        var stack = new StackPanel();
+        // The avatar/state-tag/subtext/mode-button group centers vertically
+        // in whatever space is left between the header and the transcript/
+        // chips - a plain top-aligned StackPanel (the original approach)
+        // left this group pinned right under the header with a growing gap
+        // of dead space below it whenever AURA's own naturally shorter
+        // content sat inside the taller shared PanelMinHeight (driven by
+        // ARC, the tallest skin - see OverlayLayout). header stays its own
+        // row rather than joining the centered group, since it's chrome
+        // (wordmark + buttons), not part of the "look centered" content.
+        var coreContent = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
+        coreContent.Children.Add(faceCanvas);
+        coreContent.Children.Add(_stateLabel);
+        coreContent.Children.Add(_subLabel);
+        coreContent.Children.Add(_modeButton);
+
+        var stack = new Grid();
+        stack.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        stack.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        stack.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        Grid.SetRow(header, 0);
+        Grid.SetRow(coreContent, 1);
+        Grid.SetRow(_transcript.Root, 2);
         stack.Children.Add(header);
-        stack.Children.Add(faceCanvas);
-        stack.Children.Add(_stateLabel);
-        stack.Children.Add(_subLabel);
-        stack.Children.Add(_modeButton);
+        stack.Children.Add(coreContent);
         stack.Children.Add(_transcript.Root);
 
         // WEB's edge-to-edge chrome doesn't apply here - AURA's status row
