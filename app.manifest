@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Declares Nova.exe as genuinely Per-Monitor-V2 DPI aware. Without this,
+     Windows silently virtualizes/scales the process's coordinate space,
+     which is consistent with two separate bugs found while building the
+     WebView2 overlay: a stale position file that placed the window at
+     coordinates that didn't match what screen-capture tools (which *are*
+     DPI-aware) reported, and synthetic mouse clicks computed from real
+     physical-pixel button positions landing nowhere on the actual window.
+     WebView2 in particular needs the host to be DPI-aware for its own
+     rendering and input hit-testing to line up correctly. -->
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <application xmlns="urn:schemas-microsoft-com:asm.v3">
+    <windowsSettings>
+      <dpiAwareness xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">PerMonitorV2</dpiAwareness>
+      <dpiAware xmlns="http://schemas.microsoft.com/SMI/2005/WindowsSettings">true/pm</dpiAware>
+    </windowsSettings>
+  </application>
+</assembly>

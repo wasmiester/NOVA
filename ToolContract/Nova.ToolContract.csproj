@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- Plain net10.0, not net10.0-windows - this contract (and, by
+         extension, every tool project that references it) has no
+         Windows-specific dependency of its own. Keeping it minimal keeps
+         self-authored tools free to do the same unless a specific tool
+         genuinely needs a Windows API. -->
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+</Project>

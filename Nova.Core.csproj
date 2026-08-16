@@ -1,0 +1,115 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <!-- net10.0-windows + UseWindowsForms: FlaUI (screen reading) needs the
+         legacy Accessibility.dll compat assembly, only pulled in by a
+         Windows Desktop-flavored TFM - plain net8.0/net10.0 throws
+         FileNotFoundException for it at runtime. Matches the WindowsDesktop
+         runtime actually installed on this machine (10.0.10). The app was
+         already Windows-only in practice (NAudio, cmd.exe, etc.), so this
+         doesn't give up any real portability. -->
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AssemblyName>Nova</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- UseWindowsForms's implicit global usings (System.Windows.Forms,
+         System.Drawing) collide with Avalonia's own Button/Color/Control/
+         Pen/FontFamily/Size types - stripped so every file explicitly
+         states which stack it's talking to. Input/HotkeyListener.cs and
+         Screen/DesktopInteraction.cs already import System.Windows.Forms /
+         System.Drawing explicitly, so this is a no-op for them. -->
+    <Using Remove="System.Windows.Forms" />
+    <Using Remove="System.Drawing" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- NovaTerminalRelay (TerminalRelay/) is its own separate project/exe,
+         launched as a child process for the plain-text watched-terminal
+         feature - excluded here so its Program.cs (also top-level
+         statements) doesn't get pulled into this project's implicit glob
+         and collide with this one's own Main. -->
+    <Compile Remove="TerminalRelay\**" />
+    <None Remove="TerminalRelay\**" />
+    <!-- Same reasoning as TerminalRelay above - ToolContract is its own
+         separate project, pulled in via ProjectReference below (which
+         references its *built* output), not by sweeping its source into
+         this project's own implicit compile glob. Without this, Nova.Core
+         tries to directly compile ToolContract's files (and its generated
+         obj/ AssemblyInfo.cs) a second time, colliding with the copy
+         ProjectReference already built - confirmed live: this is exactly
+         what happened the first time ToolContract was added, surfaced as
+         "duplicate AssemblyVersionAttribute" and similar CS0579 errors. -->
+    <Compile Remove="ToolContract\**" />
+    <None Remove="ToolContract\**" />
+    <!-- SelfContainedTools/ is where self-contained tools Nova authors at
+         runtime live (see Tools/Dynamic/) - its own separate git repo,
+         built independently per tool, never part of Nova.Core's own
+         compile glob either. Named distinctly from the existing Tools/
+         folder above (not e.g. "tools\**") - MSBuild globs are
+         case-insensitive on Windows, and a same-named pattern here
+         silently swallowed the *existing* Tools/ folder's own files
+         (including wherever PendingToolCall is defined) the first time,
+         breaking the main build entirely. -->
+    <Compile Remove="SelfContainedTools\**" />
+    <None Remove="SelfContainedTools\**" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The shared interface self-contained tools (Tools/Dynamic/) are
+         built against - see ToolContract/INovaTool.cs. A real
+         ProjectReference (not just a path lookup at runtime) so the host
+         and the contract build together and stay in sync. -->
+    <ProjectReference Include="ToolContract\Nova.ToolContract.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Official Anthropic C# SDK. Beta - pin the version and check
+         https://platform.claude.com/docs/en/api/sdks/csharp before upgrading. -->
+    <PackageReference Include="Anthropic" Version="12.9.0" />
+    <PackageReference Include="ElBruno.LocalEmbeddings" Version="1.5.9" />
+    <PackageReference Include="FlaUI.Core" Version="5.0.0" />
+    <PackageReference Include="FlaUI.UIA3" Version="5.0.0" />
+    <!-- Gmail send/read + Calendar read/create. OAuth2 "installed app" flow
+         (GoogleWebAuthorizationBroker) - opens the browser for consent once,
+         caches a refresh token to data/google-token/ after that. -->
+    <PackageReference Include="Google.Apis.Auth" Version="1.75.0" />
+    <PackageReference Include="Google.Apis.Gmail.v1" Version="1.74.0.4162" />
+    <PackageReference Include="Google.Apis.Calendar.v3" Version="1.75.0.4206" />
+    <!-- Docs read/create/append + Drive search/read/upload, and (same free,
+         no-billing-account tier) Sheets read/create/append/update-range +
+         Slides read/create/append-slide/replace-text - not metered like
+         Maps Platform. -->
+    <PackageReference Include="Google.Apis.Docs.v1" Version="1.74.0.4134" />
+    <PackageReference Include="Google.Apis.Drive.v3" Version="1.75.0.4218" />
+    <PackageReference Include="Google.Apis.Sheets.v4" Version="1.75.0.4178" />
+    <PackageReference Include="Google.Apis.Slides.v1" Version="1.74.0.4115" />
+    <PackageReference Include="KokoroSharp.CPU" Version="0.8.0" />
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.10" />
+    <!-- Overlay UI (Overlay/) - renders the floating ARC/WEB/AURA HUD as a
+         transparent/borderless/always-on-top window with real hit-testing.
+         Replaced an earlier WPF+WebView2 attempt: WPF's AllowsTransparency
+         hit-tests off its own rendered bitmap, which has nothing drawn
+         where a hosted WebView2 child HWND paints itself, so every click
+         over the overlay fell through to whatever was behind it on the
+         desktop. Avalonia renders its whole window itself (Skia, no child
+         HWND for content), so there's no separate surface for hit-testing
+         to disagree with, and it has first-class support for transparent/
+         borderless always-on-top overlay windows. -->
+    <PackageReference Include="Avalonia" Version="12.1.1" />
+    <PackageReference Include="Avalonia.Desktop" Version="12.1.1" />
+    <PackageReference Include="Avalonia.Skia" Version="12.1.1" />
+    <PackageReference Include="Avalonia.Themes.Fluent" Version="12.1.1" />
+    <PackageReference Include="Microsoft.Playwright" Version="1.61.0" />
+    <PackageReference Include="NAudio" Version="2.3.0" />
+    <PackageReference Include="SoundFlow.Extensions.WebRtc.Apm" Version="1.4.0" />
+    <PackageReference Include="SQLitePCLRaw.lib.e_sqlite3" Version="3.53.3" />
+    <PackageReference Include="Whisper.net" Version="1.9.1" />
+    <PackageReference Include="Whisper.net.AllRuntimes" Version="1.9.1" />
+  </ItemGroup>
+
+</Project>

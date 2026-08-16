@@ -1,0 +1,30 @@
+bin/
+obj/
+
+# IDE artifacts
+.vs/
+.idea/
+*.user
+.vscode/
+
+# Real secrets - keep secrets/.env.example, never commit secrets/.env
+secrets/.env
+
+# Persistent memory - personal facts about the user, never commit
+data/
+
+# Local speech models - Whisper (STT), Silero (VAD), Kokoro (TTS) - all
+# downloaded automatically on first run (see Program.cs), no reason to
+# commit ~400MB of binary weights.
+models/
+kokoro.onnx
+
+# Self-contained tools Nova builds at runtime (see Tools/Dynamic/) - its
+# own separate git repo (SelfContainedTools/.git), not tracked as part of
+# this one. Also covers each generated tool project's own bin/obj.
+SelfContainedTools/
+
+# Working notes (roadmap + dead-end/design-reasoning notes, written to
+# self mid-build) - kept locally for reference, not meant as the public-
+# facing docs. See docs/ for the cleaned-up versions.
+notes/
