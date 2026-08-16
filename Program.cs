@@ -29,10 +29,10 @@ namespace Nova;
 //   10 - semantic memory search                -> Memory/MemoryStore.cs
 //   11 - browser tools attach to real Chrome    -> Browser/BrowserController.cs
 //   12 - real acoustic echo cancellation        -> Audio/AudioCapturePipeline.cs
-//   13 - comfort levels + narrow browser/desktop clicking -> Comfort/, Browser/NavigationalClickGuard.cs
+//   13 - activation modes + narrow browser/desktop clicking -> Comfort/, Browser/NavigationalClickGuard.cs
 //   14 - Gmail send/read + inbox watch + Calendar -> Google/
 //   15 - watched terminal (plain-text pass-through) -> TerminalRelay/, Ambient/TerminalWatcher.cs
-//   16 - floating overlay HUD (WPF, own STA thread) -> Overlay/
+//   16 - floating overlay HUD (Avalonia, own STA thread) -> Overlay/
 internal static class Program
 {
     // Experiment: evaluating whether Chatterbox (via a local Python sidecar,
@@ -250,9 +250,9 @@ internal static class Program
         audioPipeline.Start();
 
         // Floating overlay HUD (ARC/WEB/AURA skins, ⟳ to switch) - runs on
-        // its own dedicated STA thread with its own WPF Dispatcher loop, the
+        // its own dedicated STA thread with its own Avalonia event loop, the
         // same shape as HotkeyListener's own STA thread below. See
-        // Overlay/OverlayHost.cs.
+        // Overlay/AvaloniaOverlayHost.cs.
         using var overlay = new AvaloniaOverlayHost(assistant, repoRoot);
 
         // Ctrl+Alt+Space has Nova announce she's listening (like a butler

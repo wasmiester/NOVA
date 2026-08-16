@@ -7,14 +7,14 @@ using Anthropic;
 
 namespace Nova;
 
-// Comfort level 1 (autonomous): watches a directory for file changes and
-// uses a cheap Haiku call to decide whether a change is worth proactively
-// surfacing, before ever escalating to a real (Sonnet, full-conversation)
-// turn. Per the roadmap, "the Haiku ambient gate sees only the current
-// trigger" - not the conversation history - which is what keeps this cheap
-// enough to run continuously. Fails closed: any error (including a locked
-// file mid-write) is treated as "not worth it," never as a reason to
-// escalate.
+// Watches a directory for file changes and uses a cheap Haiku call to
+// decide whether a change is worth proactively surfacing, before ever
+// escalating to a real (Sonnet, full-conversation) turn - only fires while
+// engaged (see NovaAssistant.TriggerAmbientFileSuggestion). Per the
+// roadmap, "the Haiku ambient gate sees only the current trigger" - not the
+// conversation history - which is what keeps this cheap enough to run
+// continuously. Fails closed: any error (including a locked file mid-write)
+// is treated as "not worth it," never as a reason to escalate.
 //
 // v1 simplification: watches wherever the process was launched from
 // (Directory.GetCurrentDirectory()) rather than a configured "current

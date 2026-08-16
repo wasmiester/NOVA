@@ -8,11 +8,12 @@ using Anthropic;
 
 namespace Nova;
 
-// Comfort level 1 (autonomous)'s other ambient source, alongside
-// AmbientFileWatcher: watches output from a plain-text pass-through
-// terminal (see TerminalRelay/, launched via the open_watched_terminal
-// tool) over a named pipe, buffers/debounces it, and asks the same Haiku
-// gate whether it's worth surfacing.
+// The other ambient source, alongside AmbientFileWatcher (same
+// only-fires-while-engaged gating - see NovaAssistant.TriggerTerminalSuggestion):
+// watches output from a plain-text pass-through terminal (see TerminalRelay/,
+// launched via the open_watched_terminal tool) over a named pipe,
+// buffers/debounces it, and asks the same Haiku gate whether it's worth
+// surfacing.
 //
 // v1 simplification: one watched terminal at a time - the pipe server only
 // accepts a single connection; a second relay process would just wait

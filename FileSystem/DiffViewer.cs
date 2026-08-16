@@ -7,8 +7,10 @@ using System.Text.Json;
 
 namespace Nova;
 
-// Shows a real diff for a pending edit_file call before it's authorized -
-// this is the Gate 1 review (what will change); FileEditHistory is the
+// Shows a real diff for a pending edit_file overwrite right before it
+// executes - this is part of the Gate 2 review (what will change), called
+// from the Gate 2 block since every edit_file overwrite is Gate 2 by
+// definition (see ToolCatalog.IsFree/IsGate2); FileEditHistory is the
 // separate safety net for after the fact (what it can be reverted back
 // to, via revert_file_edit) - the two aren't redundant, one is prevention,
 // the other is recovery. Prefers VS Code's native diff view (`code

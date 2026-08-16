@@ -27,6 +27,6 @@ internal static class WatchedTerminalLauncher
         Process.Start(psi);
         return "Opened a new terminal window that I'm watching (plain text only - no colors or " +
                "interactive tools like vim). Build, test, or git output there may prompt me to say " +
-               "something if it looks worth mentioning, when in autonomous mode.";
+               "something if it looks worth mentioning, while I'm engaged.";
     }
 }
