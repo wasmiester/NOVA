@@ -8,7 +8,7 @@ OpenClaw (formerly Clawdbot) is a large, fast-growing, MIT-licensed open-source 
 
 ## Kafka
 
-Raised twice — once for ambient-trigger ingestion, once for multi-device sync — and wrong both times. Kafka solves multi-consumer, distributed-scale, durable-log problems; Nova has exactly one consumer (herself) on one machine, and even the planned multi-device case is just two endpoints belonging to one person. The right-sized equivalents: an in-process queue (.NET Channels) for ambient ingestion, a direct WebSocket/gRPC link for a future phone↔PC connection.
+Considered for ambient-trigger ingestion and for a future multi-device sync link — overkill for both. An in-process queue (.NET Channels) covers ambient ingestion; a direct WebSocket/gRPC connection covers phone↔PC. Right-sized beats resume-shaped.
 
 ## Cloud STT/TTS as the permanent plan
 
@@ -17,10 +17,6 @@ Originally scoped cloud-first (a hosted speech-to-text API + a hosted voice API)
 ## Vision-based screen reading as the default
 
 Considered and deliberately deprioritized. Windows UI Automation (native apps) and Playwright (browser/DOM) read structured data directly from the OS or the page — no ML inference, near-instant, no GPU. A vision pipeline (screenshot → a vision-capable model) is a fundamentally heavier path: different ingestion, worse token economics, harder context management — and almost nothing in Nova's actual use cases (coding tools, browser forms) needs it. Kept as a fallback for the rare app with no accessibility tree at all, not the default.
-
-## GitHub for skill/tool version control
-
-Plain local git gives the full rollback mechanism — commit, diff, checkout — with zero network dependency, zero account, zero token, fitting the local-first thread running through the rest of the project. GitHub only becomes relevant later, if remote browsing or publishing/sharing tools is ever built — never needed for the safety mechanism itself.
 
 ## WPF + WebView2 for the overlay UI
 
