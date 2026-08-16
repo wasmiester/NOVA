@@ -31,9 +31,18 @@ Nova runs as a small floating overlay rather than a console window, with three i
 - 3D-printable model generation for parametric shapes (brackets, mounts, enclosures) via OpenSCAD
 - A thin phone client eventually, with the PC doing all the actual reasoning
 
-## Getting started
+## Dependencies
 
-Windows only — it leans on Windows UI Automation and native `cmd.exe` integration. Requires the [.NET 10 SDK](https://dotnet.microsoft.com/download).
+Windows only — it leans on Windows UI Automation and native `cmd.exe` integration. You'll need the [.NET 10 SDK](https://dotnet.microsoft.com/download) and an [Anthropic API key](https://console.anthropic.com/); everything else below is a NuGet package pulled in automatically on first build, nothing to install by hand.
+
+- **Reasoning**: the official [`Anthropic`](https://www.nuget.org/packages/Anthropic) C# SDK (Claude Sonnet 5 + Haiku 4.5)
+- **Voice**: [Whisper.net](https://www.nuget.org/packages/Whisper.net) (speech-to-text, default) or [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) (an experimental streaming alternative — see `docs/DESIGN_DECISIONS.md`), [KokoroSharp](https://www.nuget.org/packages/KokoroSharp.CPU) (text-to-speech), and [SoundFlow's WebRTC Audio Processing Module](https://www.nuget.org/packages/SoundFlow.Extensions.WebRtc.Apm) (real acoustic echo cancellation, so Nova doesn't hear herself)
+- **Screen/browser reading**: [FlaUI](https://www.nuget.org/packages/FlaUI.Core) (Windows UI Automation) and [Microsoft.Playwright](https://www.nuget.org/packages/Microsoft.Playwright) (browser DOM access)
+- **Overlay UI**: [Avalonia](https://www.nuget.org/packages/Avalonia) (the floating HUD, all three skins)
+- **Memory**: [Microsoft.Data.Sqlite](https://www.nuget.org/packages/Microsoft.Data.Sqlite) + [ElBruno.LocalEmbeddings](https://www.nuget.org/packages/ElBruno.LocalEmbeddings) (local embeddings for semantic memory search)
+- **Google Workspace** (optional): the `Google.Apis.*` client libraries for Gmail, Calendar, Docs, Drive, Sheets, and Slides
+
+## Getting started
 
 ```
 git clone https://github.com/wasmiester/NOVA.git
@@ -43,4 +52,15 @@ cp secrets/.env.example secrets/.env
 dotnet run
 ```
 
-First run downloads about 400MB of local models (Whisper for speech-to-text, Silero for voice-activity-detection, Kokoro for text-to-speech) — after that, everything runs offline. Gmail, Calendar, Docs, Drive, Sheets, and Slides are optional and can be connected later from the in-app credentials popup, no restart required (see `secrets/.env.example` for the Google Cloud setup steps).
+First run downloads about 400MB of local models (Whisper for speech-to-text, Silero for voice-activity-detection, Kokoro for text-to-speech) — after that, everything runs offline.
+
+Gmail, Calendar, Docs, Drive, Sheets, and Slides are optional and can be connected later from the in-app credentials popup, no restart required — but each one is a **separate API that has to be individually enabled** in your Google Cloud project (APIs & Services > Enabled APIs & services), not just one "Google" toggle:
+
+- Gmail API
+- Google Calendar API
+- Google Docs API
+- Google Drive API
+- Google Sheets API
+- Google Slides API
+
+Enable all six up front if you're planning to use any of them — a disabled API fails at call time (a 403 partway through a task), not at startup, and it can take a few minutes after enabling before it actually takes effect. Full setup steps (OAuth consent screen, credentials) are in `secrets/.env.example`.

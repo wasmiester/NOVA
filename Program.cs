@@ -1,6 +1,7 @@
 using System;
 using System.Diagnostics;
 using System.IO;
+using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
 using Anthropic;
@@ -40,6 +41,21 @@ internal static class Program
     // committing to it. Flip to false to go back to Kokoro - see
     // Speech/ITtsEngine.cs for how the two engines are kept swappable.
     private const bool UseChatterboxTts = false;
+
+    // Experiment: evaluating a streaming Zipformer transducer (via
+    // sherpa-onnx) against Whisper for accuracy/latency - see
+    // docs/DESIGN_DECISIONS.md and Speech/ISttEngine.cs for how the two
+    // engines are kept swappable, same pattern as UseChatterboxTts above.
+    // First attempt produced garbled transcriptions live (missing silence
+    // padding around the real audio - see SherpaOnnxSttEngine's own doc
+    // comment for the fix, verified against sherpa-onnx's actual
+    // online-decode-files example source). Also, ProcessUtteranceAsync now
+    // handles a transcription-engine exception without hanging the whole
+    // pipeline regardless of which engine is active, closing the other
+    // failure mode hit during that same test. Back on for another live
+    // test with the fix in place - flip to false to fall back to Whisper
+    // if it's still not right.
+    private const bool UseSherpaOnnxStt = true;
 
     private static async Task Main()
     {
@@ -188,41 +204,51 @@ internal static class Program
             tts = new KokoroTtsEngine(kokoroTts, kokoroVoice);
         }
 
-        // Downgraded from small.en to base.en (still quantized) - small was
-        // the single biggest contributor to perceived response latency,
-        // and became more noticeable once transcriptions started being
-        // serialized through one lock (see NovaAssistant's
-        // _transcriptionLock) for "dynamic talking" - a queued-up
-        // interjection now has to wait out however long the one ahead of
-        // it takes. base.en is roughly 2-3x faster on CPU; still solid
-        // accuracy for clear, short spoken commands, which is the actual
-        // workload here, not dictating long-form prose.
-        string whisperModelPath = Path.Combine(repoRoot, "models", "ggml-base.en-q5_1.bin");
-        if (!File.Exists(whisperModelPath))
+        ISttEngine stt;
+        if (UseSherpaOnnxStt)
         {
-            Console.WriteLine("Downloading speech-to-text model (first run only)...");
-            Directory.CreateDirectory(Path.GetDirectoryName(whisperModelPath)!);
-            using Stream modelStream = await WhisperGgmlDownloader.Default.GetGgmlModelAsync(GgmlType.BaseEn, QuantizationType.Q5_1);
-            using FileStream fileStream = File.Create(whisperModelPath);
-            await modelStream.CopyToAsync(fileStream);
+            stt = await LoadSherpaOnnxSttAsync(repoRoot);
+        }
+        else
+        {
+            // Downgraded from small.en to base.en (still quantized) - small was
+            // the single biggest contributor to perceived response latency,
+            // and became more noticeable once transcriptions started being
+            // serialized through one lock (see NovaAssistant's
+            // _transcriptionLock) for "dynamic talking" - a queued-up
+            // interjection now has to wait out however long the one ahead of
+            // it takes. base.en is roughly 2-3x faster on CPU; still solid
+            // accuracy for clear, short spoken commands, which is the actual
+            // workload here, not dictating long-form prose.
+            string whisperModelPath = Path.Combine(repoRoot, "models", "ggml-base.en-q5_1.bin");
+            if (!File.Exists(whisperModelPath))
+            {
+                Console.WriteLine("Downloading speech-to-text model (first run only)...");
+                Directory.CreateDirectory(Path.GetDirectoryName(whisperModelPath)!);
+                using Stream modelStream = await WhisperGgmlDownloader.Default.GetGgmlModelAsync(GgmlType.BaseEn, QuantizationType.Q5_1);
+                using FileStream fileStream = File.Create(whisperModelPath);
+                await modelStream.CopyToAsync(fileStream);
+            }
+
+            // Whisper.net.AllRuntimes bundles CPU/CUDA/Vulkan/CoreML/OpenVINO
+            // native backends and auto-picks the "best" one available - on this
+            // machine that silently meant Vulkan, which pulls the full Intel
+            // *and* NVIDIA GPU driver/shader-compiler stack (~300MB) directly
+            // into this process just to transcribe short VAD-gated utterances,
+            // nowhere near demanding enough to need GPU acceleration. Forcing
+            // CPU keeps the same model/accuracy/functionality, just without
+            // that driver stack ever loading.
+            RuntimeOptions.RuntimeLibraryOrder = [RuntimeLibrary.Cpu];
+            WhisperFactory whisperFactory = WhisperFactory.FromPath(whisperModelPath);
+            WhisperProcessor whisperProcessor = whisperFactory.CreateBuilder()
+                .WithLanguage("en")
+                .WithNoContext() // this WhisperProcessor is reused across turns - don't let one
+                                  // turn's transcription bias decoding on the next
+                .WithThreads(Environment.ProcessorCount)
+                .Build();
+            stt = new WhisperSttEngine(whisperProcessor);
         }
 
-        // Whisper.net.AllRuntimes bundles CPU/CUDA/Vulkan/CoreML/OpenVINO
-        // native backends and auto-picks the "best" one available - on this
-        // machine that silently meant Vulkan, which pulls the full Intel
-        // *and* NVIDIA GPU driver/shader-compiler stack (~300MB) directly
-        // into this process just to transcribe short VAD-gated utterances,
-        // nowhere near demanding enough to need GPU acceleration. Forcing
-        // CPU keeps the same model/accuracy/functionality, just without
-        // that driver stack ever loading.
-        RuntimeOptions.RuntimeLibraryOrder = [RuntimeLibrary.Cpu];
-        using WhisperFactory whisperFactory = WhisperFactory.FromPath(whisperModelPath);
-        using WhisperProcessor whisperProcessor = whisperFactory.CreateBuilder()
-            .WithLanguage("en")
-            .WithNoContext() // this WhisperProcessor is reused across turns - don't let one
-                              // turn's transcription bias decoding on the next
-            .WithThreads(Environment.ProcessorCount)
-            .Build();
         Console.WriteLine("Speech-to-text ready.");
 
         string vadModelPath = Path.Combine(repoRoot, "models", "silero-vad.bin");
@@ -242,7 +268,7 @@ internal static class Program
         Console.WriteLine("Voice-activity detection ready.\n");
 
         var assistant = new NovaAssistant(
-            client, tts, whisperProcessor, vadProcessor, memoryDbPath, conversationArchiveDbPath, fileEditHistoryDbPath, embeddingGenerator, browser,
+            client, tts, stt, vadProcessor, memoryDbPath, conversationArchiveDbPath, fileEditHistoryDbPath, embeddingGenerator, browser,
             gmailClient, calendarClient, docsClient, driveClient, sheetsClient, slidesClient, secretsEnvPath, googleTokenStoreDir, settingsPath,
             selfContainedToolsDir, toolRegistryDbPath, toolContractDllPath, () => WatchedTerminalLauncher.Open(repoRoot));
 
@@ -327,5 +353,45 @@ internal static class Program
             UseShellExecute = false,
         };
         return Process.Start(psi)!;
+    }
+
+    // Streaming Zipformer transducer, int8-quantized "left-64" chunk variant
+    // (lower-latency context window than the also-available left-128) -
+    // sherpa-onnx's own actual streaming-native English model, not batch
+    // Whisper with a bigger model swapped in. Downloaded from the model
+    // author's Hugging Face repo (mirrors the k2-fsa/sherpa-onnx project's
+    // own hosting for this checkpoint) the same "download once, cache
+    // locally" way the Whisper/Silero models above already work.
+    private static readonly string[] SherpaOnnxModelFiles =
+    [
+        "encoder-epoch-99-avg-1-chunk-16-left-64.int8.onnx",
+        "decoder-epoch-99-avg-1-chunk-16-left-64.int8.onnx",
+        "joiner-epoch-99-avg-1-chunk-16-left-64.int8.onnx",
+        "tokens.txt",
+    ];
+
+    private static async Task<ISttEngine> LoadSherpaOnnxSttAsync(string repoRoot)
+    {
+        const string modelName = "sherpa-onnx-streaming-zipformer-en-2023-06-26";
+        string modelDir = Path.Combine(repoRoot, "models", modelName);
+        Directory.CreateDirectory(modelDir);
+
+        using var http = new HttpClient();
+        foreach (string fileName in SherpaOnnxModelFiles)
+        {
+            string localPath = Path.Combine(modelDir, fileName);
+            if (File.Exists(localPath))
+            {
+                continue;
+            }
+
+            Console.WriteLine($"Downloading speech-to-text model file {fileName} (first run only)...");
+            string url = $"https://huggingface.co/csukuangfj/{modelName}/resolve/main/{fileName}";
+            using Stream modelStream = await http.GetStreamAsync(url);
+            using FileStream fileStream = File.Create(localPath);
+            await modelStream.CopyToAsync(fileStream);
+        }
+
+        return new SherpaOnnxSttEngine(modelDir);
     }
 }

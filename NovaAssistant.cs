@@ -27,7 +27,7 @@ internal sealed class NovaAssistant
 
     private readonly AnthropicClient _client;
     private readonly ITtsEngine _tts;
-    private readonly WhisperProcessor _whisperProcessor;
+    private readonly ISttEngine _stt;
     private readonly WhisperVadProcessor _vadProcessor;
     private readonly string _memoryDbPath;
     // Separate file from _memoryDbPath (see ConversationArchive's own doc
@@ -284,7 +284,7 @@ internal sealed class NovaAssistant
     public NovaAssistant(
         AnthropicClient client,
         ITtsEngine tts,
-        WhisperProcessor whisperProcessor,
+        ISttEngine stt,
         WhisperVadProcessor vadProcessor,
         string memoryDbPath,
         string conversationArchiveDbPath,
@@ -307,7 +307,7 @@ internal sealed class NovaAssistant
     {
         _client = client;
         _tts = tts;
-        _whisperProcessor = whisperProcessor;
+        _stt = stt;
         _vadProcessor = vadProcessor;
         _memoryDbPath = memoryDbPath;
         _conversationArchiveDbPath = conversationArchiveDbPath;
@@ -680,14 +680,7 @@ internal sealed class NovaAssistant
                 return null;
             }
 
-            var transcript = new StringBuilder();
-            await foreach (SegmentData segment in _whisperProcessor.ProcessAsync(samples))
-            {
-                transcript.Append(segment.Text);
-            }
-
-            string text = transcript.ToString().Trim();
-            return string.IsNullOrWhiteSpace(text) ? null : text;
+            return await _stt.TranscribeAsync(samples);
         }
         finally
         {
@@ -866,12 +859,31 @@ internal sealed class NovaAssistant
         }
 
         // Immediate feedback that something is happening - otherwise there's
-        // total silence for the entire VAD-confirm + Whisper pipeline before
-        // any text shows up at all.
+        // total silence for the entire VAD-confirm + transcription pipeline
+        // before any text shows up at all.
         Console.WriteLine("[transcribing...]");
         Volatile.Write(ref _currentActivity, "transcribing");
 
-        string? input = await TranscribeAsync(samples);
+        string? input;
+        try
+        {
+            input = await TranscribeAsync(samples);
+        }
+        catch (Exception ex)
+        {
+            // A transcription-engine failure (a bad STT backend, a native
+            // exception) must never leave _isBusy stuck - without this,
+            // Nova silently stops responding to *everything* from this
+            // point on, with no error spoken and no way back short of a
+            // restart. Real, not hypothetical - confirmed live while
+            // testing an experimental STT engine swap.
+            ErrorLog.Log("ProcessUtteranceAsync (transcription)", ex);
+            Volatile.Write(ref _isBusy, 0);
+            Volatile.Write(ref _currentActivity, null);
+            await TryAnnounceUnhandledErrorAsync();
+            return;
+        }
+
         if (input is null)
         {
             Volatile.Write(ref _isBusy, 0);
