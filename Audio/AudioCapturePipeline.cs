@@ -53,8 +53,36 @@ internal sealed class AudioCapturePipeline : IDisposable
                                                // needed to shrink too or a genuine interrupt would still feel slow to register
     private const int SilenceEndMs = 2800; // raised from 2000 - was cutting in before a normal mid-sentence pause finished
     private const int MinUtteranceMs = 400;
-    private const int PreRollChunks = 3; // ~300ms of audio kept from before speech is detected,
-                                          // so soft/quiet word starts don't get clipped
+    // ~300ms was tuned against Whisper, a batch model that tolerates a
+    // slightly-clipped word start fine. The streaming sherpa-onnx engine
+    // (see Speech/SherpaOnnxSttEngine.cs) needs ~1.28s of real left-context
+    // before its streaming state is actually warmed up - short of that, it
+    // consistently mis-transcribes the first word or two of every utterance
+    // no matter how much *synthetic* padding gets glued on downstream,
+    // because the synthetic-to-real seam sits right at the real speech
+    // onset either way. Bumped to give sherpa real captured audio (this
+    // mic's own noise floor, continuous with what follows) to warm up on
+    // instead, rather than fabricated noise with a hard seam right where
+    // speech starts. Harmless for Whisper too - extra real lead-in silence
+    // doesn't hurt a batch model.
+    private const int PreRollChunks = 13; // ~1.3s of audio kept from before speech is detected
+
+    // Both sherpa-onnx AND Whisper garble the same "Hey Nova ..." prefix on
+    // otherwise-identical utterances (confirmed live, same test phrases,
+    // same "and over ..." nonsense prefix from both engines) - proves the
+    // problem isn't either STT engine, it's something in this shared
+    // capture path producing a genuinely corrupted first ~100-300ms rather
+    // than two unrelated models coincidentally guessing wrong the same way.
+    // Prints a coarse RMS-over-time profile of every utterance's first
+    // ~500ms so an actual amplitude anomaly (a dropout, a spike, a click)
+    // can be seen directly instead of inferred secondhand from what two
+    // different models guess garbled audio sounds like. Diagnosed live:
+    // profile was clean (a normal, gradual speech attack, no click/dropout/
+    // clipping) - rules out capture-pipeline corruption as the cause of the
+    // "Hey Nova" garbling. Off now that its question is answered; flip back
+    // on if a future capture-side issue needs the same kind of real
+    // amplitude evidence instead of another guess.
+    private const bool DebugLogOnsetProfile = false;
 
     private readonly NovaAssistant _assistant;
 
@@ -259,6 +287,11 @@ internal sealed class AudioCapturePipeline : IDisposable
         float[] finished = _utteranceBuffer.ToArray();
         _utteranceBuffer.Clear();
 
+        if (DebugLogOnsetProfile)
+        {
+            LogOnsetProfile(finished);
+        }
+
         if (finished.Length < SampleRateHz * MinUtteranceMs / 1000)
         {
             return;
@@ -272,6 +305,28 @@ internal sealed class AudioCapturePipeline : IDisposable
         {
             _assistant.DispatchUtterance(finished);
         }
+    }
+
+    private static void LogOnsetProfile(float[] samples)
+    {
+        const int windowMs = 50;
+        int windowSize = SampleRateHz * windowMs / 1000;
+        int windows = Math.Min(10, samples.Length / windowSize); // first ~500ms
+        var parts = new List<string>();
+        for (int w = 0; w < windows; w++)
+        {
+            float[] window = samples[(w * windowSize)..((w + 1) * windowSize)];
+            float rms = AudioDsp.ComputeRms(window);
+            float peak = 0f;
+            foreach (float s in window)
+            {
+                peak = Math.Max(peak, Math.Abs(s));
+            }
+
+            parts.Add($"[{w * windowMs}ms rms={rms:F4} peak={peak:F4}]");
+        }
+
+        Console.WriteLine($"[onset profile, {samples.Length} samples total] {string.Join(" ", parts)}");
     }
 
     public void Dispose()

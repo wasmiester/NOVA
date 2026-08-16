@@ -42,20 +42,34 @@ internal static class Program
     // Speech/ITtsEngine.cs for how the two engines are kept swappable.
     private const bool UseChatterboxTts = false;
 
-    // Experiment: evaluating a streaming Zipformer transducer (via
+    // Experiment, concluded: evaluated a streaming Zipformer transducer (via
     // sherpa-onnx) against Whisper for accuracy/latency - see
     // docs/DESIGN_DECISIONS.md and Speech/ISttEngine.cs for how the two
     // engines are kept swappable, same pattern as UseChatterboxTts above.
-    // First attempt produced garbled transcriptions live (missing silence
-    // padding around the real audio - see SherpaOnnxSttEngine's own doc
-    // comment for the fix, verified against sherpa-onnx's actual
-    // online-decode-files example source). Also, ProcessUtteranceAsync now
-    // handles a transcription-engine exception without hanging the whole
-    // pipeline regardless of which engine is active, closing the other
-    // failure mode hit during that same test. Back on for another live
-    // test with the fix in place - flip to false to fall back to Whisper
-    // if it's still not right.
-    private const bool UseSherpaOnnxStt = true;
+    // Verdict: Whisper wins on accuracy on this app's actual mic/voice setup.
+    // Every real, verifiable lever was tried and live-tested, in order:
+    // missing silence padding around the real audio -> padding value (zero-
+    // fill hallucinated phantom words, replaced with low-amplitude noise) ->
+    // missing FeatConfig.SampleRate/FeatureDim -> left-64 -> left-128 context
+    // window -> lead-padding duration (0.3s -> 2s, made zero difference,
+    // which is what first pointed at the seam itself rather than its
+    // duration) -> real pre-roll context in AudioCapturePipeline.cs instead
+    // of synthetic padding -> greedy_search -> modified_beam_search + hotword
+    // biasing toward "Nova" (never fully wired up - needs the model's
+    // bpe.model in the vocab-dump text format sherpa's BpeVocab actually
+    // wants, not the sentencepiece binary the model repo ships, which
+    // crashed the app when tried directly) -> int8 -> full fp32 weights.
+    // Along the way, confirmed live that Whisper produces the exact same
+    // "Hey Nova" garbled-prefix shape on identical phrases (ruling out
+    // sherpa specifically) and that AudioCapturePipeline's onset-profile
+    // diagnostic showed no click/dropout/clipping at utterance start (ruling
+    // out capture-pipeline corruption) - so the prefix issue is a genuine
+    // acoustic-ambiguity/model-capability limit, not a bug. Even past the
+    // prefix, sherpa's mid-utterance accuracy stayed behind Whisper's on the
+    // same phrases through every one of those changes, fp32 included.
+    // Flip to true to resume sherpa testing if a real new lead shows up
+    // (e.g. finishing the BpeVocab wiring, or a future model release).
+    private const bool UseSherpaOnnxStt = false;
 
     private static async Task Main()
     {
@@ -355,18 +369,33 @@ internal static class Program
         return Process.Start(psi)!;
     }
 
-    // Streaming Zipformer transducer, int8-quantized "left-64" chunk variant
-    // (lower-latency context window than the also-available left-128) -
-    // sherpa-onnx's own actual streaming-native English model, not batch
-    // Whisper with a bigger model swapped in. Downloaded from the model
-    // author's Hugging Face repo (mirrors the k2-fsa/sherpa-onnx project's
-    // own hosting for this checkpoint) the same "download once, cache
-    // locally" way the Whisper/Silero models above already work.
+    // Streaming Zipformer transducer, "left-128" chunk variant (switched
+    // from left-64 - see SherpaOnnxSttEngine's own doc comment: left-64's
+    // smaller context window was confirmed live as a real contributor to
+    // consistently near-miss-but-wrong transcriptions, trading too much
+    // accuracy for latency this app doesn't need that badly) - sherpa-onnx's
+    // own actual streaming-native English model, not batch Whisper with a
+    // bigger model swapped in. Downloaded from the model author's Hugging
+    // Face repo (mirrors the k2-fsa/sherpa-onnx project's own hosting for
+    // this checkpoint) the same "download once, cache locally" way the
+    // Whisper/Silero models above already work.
+    // Full fp32 weights, not the .int8 quantized ones used by every earlier
+    // round of testing. Even discounting the "Hey Nova" prefix specifically,
+    // sherpa's mid-utterance accuracy stayed consistently behind Whisper's
+    // in direct comparison ("BUT AN OVER WHAT STUPLES TOO" / "HAINOVA CHECK
+    // MY MILL" vs Whisper's clean "what's 2 plus 2" / "check my email" on
+    // the same phrases) - quantization is a real, well-known source of
+    // accuracy loss, and an unexplored lever at the time. ~4x larger
+    // (~262MB/file vs ~71MB) and slower to run, a real tradeoff that was
+    // made deliberately, not guessed - didn't close the gap either (see
+    // UseSherpaOnnxStt's own doc comment above for the final verdict), but
+    // kept as the more-accurate-of-the-two weights now that sherpa is only
+    // used if that flag gets flipped back on.
     private static readonly string[] SherpaOnnxModelFiles =
     [
-        "encoder-epoch-99-avg-1-chunk-16-left-64.int8.onnx",
-        "decoder-epoch-99-avg-1-chunk-16-left-64.int8.onnx",
-        "joiner-epoch-99-avg-1-chunk-16-left-64.int8.onnx",
+        "encoder-epoch-99-avg-1-chunk-16-left-128.onnx",
+        "decoder-epoch-99-avg-1-chunk-16-left-128.onnx",
+        "joiner-epoch-99-avg-1-chunk-16-left-128.onnx",
         "tokens.txt",
     ];
 

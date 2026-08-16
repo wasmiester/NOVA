@@ -886,8 +886,19 @@ internal sealed class NovaAssistant
 
         if (input is null)
         {
+            // Distinct from the garbled-but-non-null case (a nonsense
+            // transcript still reaches the LLM, which naturally asks for
+            // clarification on its own) - this is the STT engine or its VAD
+            // confirmation rejecting the clip outright, most often a short
+            // or quiet utterance (confirmed live via AudioCapturePipeline's
+            // onset-profile diagnostic: a rejected utterance's real speech
+            // energy was a brief, quiet burst well below other utterances'
+            // peak levels). Previously silent here - no spoken feedback at
+            // all, so there was no way to tell "she heard nothing" apart
+            // from "she's ignoring me."
             Volatile.Write(ref _isBusy, 0);
             Volatile.Write(ref _currentActivity, null);
+            await SpeakLocalReplyAsync("Sorry, I didn't catch that - could you say it again?");
             return;
         }
 
