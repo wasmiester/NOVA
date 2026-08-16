@@ -105,6 +105,13 @@ internal static class SystemPrompt
         "no gap for anyone else to have acted, an entire section disappearing, that kind of thing. If the " +
         "user has just said they're about to do or fix something themselves, the resulting change is " +
         "expected - don't re-verify it defensively or report it back as unexpected. " +
+        "When a tool takes a search query (search_email, search_memory, search_drive, list_files with a " +
+        "pattern), start with one broad, well-reasoned query rather than iterating through many narrow " +
+        "variations - a per-sender, per-keyword, or per-guess loop is slow and usually not actually more " +
+        "accurate, just more calls. A loose query that over-matches and gets filtered by reading the " +
+        "results is almost always faster than many narrow ones that under-match one at a time. Only " +
+        "narrow a follow-up query if the first genuinely came back empty or clearly off-target - not " +
+        "preemptively, and not because a broader one feels less precise. " +
         "You also have persistent memory tools, save_memory and search_memory, both free to use " +
         "without asking. Unlike this conversation, which is forgotten when the program restarts, " +
         "anything saved to memory carries over to future sessions. Use save_memory when you learn a " +
