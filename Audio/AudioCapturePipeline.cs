@@ -51,6 +51,14 @@ internal sealed class AudioCapturePipeline : IDisposable
     // delay estimate exactly right.
     private const int BargeInSustainMs = 90; // lowered from 120 - both thresholds dropped again above, so this
                                                // needed to shrink too or a genuine interrupt would still feel slow to register
+    // A sharp, brief transient (a keyboard click, a knock) can cross
+    // SpeechRmsThreshold just as easily as real speech, but a fresh
+    // utterance start had no sustain check at all - unlike the barge-in
+    // path above, which already required this. Confirmed live: mechanical
+    // typing noise was triggering full utterance capture, sent to Whisper
+    // as garbage a couple seconds later. Genuine speech sustains well past
+    // one 10-20ms chunk even for a short word; a click doesn't.
+    private const int FreshUtteranceSustainMs = 80;
     private const int SilenceEndMs = 2800; // raised from 2000 - was cutting in before a normal mid-sentence pause finished
     private const int MinUtteranceMs = 400;
     // ~300ms was tuned against Whisper, a batch model that tolerates a
@@ -111,6 +119,10 @@ internal sealed class AudioCapturePipeline : IDisposable
     // own trailing audio from just before the interrupt, not the user's,
     // corrupting the start of the post-interrupt transcription.
     private readonly List<float[]> _bargeInCandidateChunks = [];
+    // Same idea as _bargeInCandidateChunks above, for a fresh utterance's
+    // own sustain-confirmation window (see FreshUtteranceSustainMs) - real
+    // captured audio from during that window, not discarded once confirmed.
+    private readonly List<float[]> _freshUtteranceCandidateChunks = [];
     private bool _userIsSpeaking;
     // True when the utterance currently being captured started while Nova
     // was busy but not speaking (a silent tool-execution stretch) - decides
@@ -121,6 +133,7 @@ internal sealed class AudioCapturePipeline : IDisposable
     private bool _capturingInterjection;
     private DateTime _lastVoiceAt = DateTime.MinValue;
     private DateTime? _bargeInCandidateSince;
+    private DateTime? _freshUtteranceCandidateSince;
 
     public AudioCapturePipeline(NovaAssistant assistant)
     {
@@ -236,6 +249,21 @@ internal sealed class AudioCapturePipeline : IDisposable
             // the only path that hard-interrupts her.
             if (!_userIsSpeaking)
             {
+                // Same sustain-confirmation shape as the barge-in branch
+                // above (FreshUtteranceSustainMs) - a fresh utterance never
+                // had this check before, so a single sharp transient (a
+                // keyboard click) committed to _userIsSpeaking immediately.
+                // Every chunk seen during the window is real candidate
+                // speech, buffered so a genuine word's own onset isn't lost
+                // once confirmed.
+                _freshUtteranceCandidateSince ??= DateTime.UtcNow;
+                _freshUtteranceCandidateChunks.Add(chunk);
+                if ((DateTime.UtcNow - _freshUtteranceCandidateSince.Value).TotalMilliseconds < FreshUtteranceSustainMs)
+                {
+                    return;
+                }
+
+                _freshUtteranceCandidateSince = null;
                 _capturingInterjection = _assistant.IsBusy;
 
                 // Pre-roll only makes sense seeding a *fresh* utterance
@@ -250,6 +278,19 @@ internal sealed class AudioCapturePipeline : IDisposable
                 }
 
                 _preRollBuffer.Clear();
+                foreach (float[] candidateChunk in _freshUtteranceCandidateChunks)
+                {
+                    _utteranceBuffer.AddRange(candidateChunk);
+                }
+
+                // candidateChunk above already includes this call's own
+                // chunk (added to the candidate list before the sustain
+                // check ran) - returning here instead of falling through to
+                // the shared tail below avoids adding it a second time.
+                _freshUtteranceCandidateChunks.Clear();
+                _userIsSpeaking = true;
+                _lastVoiceAt = DateTime.UtcNow;
+                return;
             }
 
             _userIsSpeaking = true;
@@ -260,6 +301,8 @@ internal sealed class AudioCapturePipeline : IDisposable
 
         _bargeInCandidateSince = null; // volume dropped - any sustain streak resets
         _bargeInCandidateChunks.Clear();
+        _freshUtteranceCandidateSince = null;
+        _freshUtteranceCandidateChunks.Clear();
 
         if (!_userIsSpeaking)
         {
