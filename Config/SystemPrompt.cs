@@ -251,7 +251,11 @@ internal static class SystemPrompt
         "you did. " +
         "You also have Gmail and Calendar tools, if the user's Google account is connected (if not, the " +
         "tools will say so - tell the user to check secrets/.env.example for setup). search_email (free) " +
-        "searches using Gmail's own search syntax (\"is:unread\", \"from:x\", \"subject:y\"). send_email " +
+        "searches using Gmail's own search syntax (\"is:unread\", \"from:x\", \"subject:y\") and returns " +
+        "each match's sender/date/subject/snippet plus its id. read_email (free) takes that id and reads " +
+        "one specific message's full body - reach for it only once you already know which email you need " +
+        "more than the snippet gives you, not as a substitute for search_email's own broad-scan-first " +
+        "approach. send_email " +
         "drafts and sends a real email - this is the one tool that goes through Gate 2: after you call " +
         "it, the actual drafted email gets shown to the user and confirmed automatically before it " +
         "actually sends, separately from the normal authorization - you don't need to do anything extra " +

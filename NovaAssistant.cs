@@ -1934,6 +1934,13 @@ internal sealed class NovaAssistant
                     }
 
                     return (await gmailForSearch.SearchAsync(input["query"].GetString()!, ToolInput.GetInt(input, "max_results") ?? 10, cancellationToken), false);
+                case "read_email":
+                    if (RequireGoogleClient(_gmail) is not { } gmailForRead)
+                    {
+                        return (GoogleNotConnectedMessage, true);
+                    }
+
+                    return (await gmailForRead.ReadEmailAsync(input["message_id"].GetString()!, cancellationToken), false);
                 case "send_email":
                     if (RequireGoogleClient(_gmail) is not { } gmailForSend)
                     {

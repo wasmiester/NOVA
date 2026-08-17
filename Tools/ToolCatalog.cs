@@ -31,7 +31,7 @@ internal static class ToolCatalog
         [
             "read_file", "list_files", "save_memory", "search_memory", "search_conversation_history", "read_screen", "browser_read",
             "browser_navigate", "browser_fill", "browser_select", "browser_check", "browser_upload",
-            "scroll_desktop", "open_path", "search_email", "list_calendar_events", "open_watched_terminal", "list_tools",
+            "scroll_desktop", "open_path", "search_email", "read_email", "list_calendar_events", "open_watched_terminal", "list_tools",
             "read_doc", "search_drive", "list_file_edits", "read_sheet", "read_slides",
             "get_settings", "update_setting", "read_recent_errors",
         ];
@@ -588,6 +588,24 @@ internal static class ToolCatalog
                 required = new[] { "query" },
             });
 
+        Tool readEmailTool = BuildTool(
+            "read_email",
+            "Reads the full plain-text body of one specific email, by the id search_email already " +
+            "includes in each of its results. The deliberate follow-up to a broad search_email scan for " +
+            "the rare case something needed (an exact time, a reference number, detail past the first " +
+            "couple hundred characters) is buried past the snippet - not a way to avoid search_email's " +
+            "own broad-scan-first approach. Read-only and always allowed. Requires the user's Google " +
+            "account to be connected.",
+            new
+            {
+                type = "object",
+                properties = new
+                {
+                    message_id = new { type = "string", description = "The email's id, from a prior search_email result." },
+                },
+                required = new[] { "message_id" },
+            });
+
         Tool sendEmailTool = BuildTool(
             "send_email",
             "Sends an email from the user's Gmail account. Irreversible and leaves the machine, so this " +
@@ -1019,7 +1037,7 @@ internal static class ToolCatalog
         [
             readFileTool, listFilesTool, editFileTool, revertFileEditTool, listFileEditsTool, deletePathTool, runCommandTool, saveMemoryTool, searchMemoryTool, searchConversationHistoryTool, readScreenTool,
             scrollDesktopTool, interactDesktopTool, openPathTool, openWatchedTerminalTool, browserNavigateTool,
-            browserReadTool, browserFillTool, browserSelectTool, browserCheckTool, browserUploadTool, browserClickTool, searchEmailTool, sendEmailTool,
+            browserReadTool, browserFillTool, browserSelectTool, browserCheckTool, browserUploadTool, browserClickTool, searchEmailTool, readEmailTool, sendEmailTool,
             listCalendarEventsTool, createCalendarEventTool, readDocTool, createDocTool, appendToDocTool, replaceInDocTool,
             searchDriveTool, uploadToDriveTool,
             readSheetTool, createSheetTool, appendSheetRowsTool, updateSheetRangeTool,
