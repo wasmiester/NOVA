@@ -54,7 +54,8 @@ dotnet run
 
 First run downloads about 400MB of local models (Whisper for speech-to-text, Silero for voice-activity-detection, Kokoro for text-to-speech) — after that, everything runs offline.
 
-Gmail, Calendar, Docs, Drive, Sheets, and Slides are optional and can be connected later from the in-app credentials popup, no restart required — but each one is a **separate API that has to be individually enabled** in your Google Cloud project (APIs & Services > Enabled APIs & services), not just one "Google" toggle:
+## Limitations
+Gmail, Calendar, Docs, Drive, Sheets, and Slides are optional and can be connected later from the in-app credentials popup, but each one is a **separate API that has to be individually enabled** in your Google Cloud project (APIs & Services > Enabled APIs & services), not just one "Google" toggle:
 
 - Gmail API
 - Google Calendar API
@@ -64,3 +65,5 @@ Gmail, Calendar, Docs, Drive, Sheets, and Slides are optional and can be connect
 - Google Slides API
 
 Enable all six up front if you're planning to use any of them — a disabled API fails at call time (a 403 partway through a task), not at startup, and it can take a few minutes after enabling before it actually takes effect. Full setup steps (OAuth consent screen, credentials) are in `secrets/.env.example`.
+
+**Browser automation only works with Chrome**, and only through a separate, dedicated Chrome instance Nova launches and controls herself — never your regular, already-running Chrome window. Chrome 136+ silently ignores the remote-debugging flag on your default profile for security reasons, so a separate instance is the only way this can work at all. Practically, that means she can't see or act on tabs already open in your normal browsing session, and any logins/extensions live in that separate profile, not your main one Worth knowing too: while that instance is running, its debug port (`localhost:9222`) is a real local control surface — anything else on the machine able to reach it has full read/control access to that browser window.
