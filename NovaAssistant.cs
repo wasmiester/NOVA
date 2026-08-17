@@ -1338,6 +1338,20 @@ internal sealed class NovaAssistant
                 string content = _lastTaskSummary is { } summary
                     ? $"[Context carried over from the task you just finished: {summary}]\n\n{input}"
                     : input;
+
+                // One cheap Haiku call, once per fresh task (see
+                // StrategyRouter's own doc comment for why this needs a
+                // real judgment call rather than search_memory's embedding
+                // similarity) - surfaces a matched strategy's exact,
+                // unmodified text into this turn's own context, the same
+                // as if it had been written into the system prompt just
+                // for this one task, without permanently costing every
+                // other conversation that never needed it.
+                if (await StrategyRouter.FindRelevantStrategyAsync(_client, _memoryDbPath, input, cts.Token) is { } strategy)
+                {
+                    content = $"[A relevant lesson from a past task: {strategy}]\n\n{content}";
+                }
+
                 _conversation.Add(new MessageParam { Role = Role.User, Content = content });
                 _lastTaskSummary = null;
             }

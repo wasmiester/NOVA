@@ -142,6 +142,36 @@ internal static class MemoryStore
         return string.Join(", ", merged);
     }
 
+    // Raw, unfiltered list of every memory carrying a given tag - no
+    // semantic search, no scoring, no truncation. Built for StrategyRouter:
+    // a "strategy" memory (a general, reusable approach lesson - see
+    // Config/SystemPrompt.cs's tag guidance) needs to reach a real LLM
+    // judgment call verbatim, not get pre-filtered by embedding similarity
+    // first - that similarity search is exactly what fails to connect a
+    // lesson to a same-shaped-but-differently-worded new task, which is
+    // the whole reason the router exists instead of just calling Search.
+    public static List<string> GetByTag(string dbPath, string tag)
+    {
+        using var connection = new SqliteConnection($"Data Source={dbPath}");
+        connection.Open();
+        using var cmd = connection.CreateCommand();
+        cmd.CommandText = "SELECT content, tags FROM memories";
+        using var reader = cmd.ExecuteReader();
+
+        var results = new List<string>();
+        while (reader.Read())
+        {
+            string tags = reader.GetString(1);
+            IEnumerable<string> tagList = tags.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+            if (tagList.Contains(tag, StringComparer.OrdinalIgnoreCase))
+            {
+                results.Add(reader.GetString(0));
+            }
+        }
+
+        return results;
+    }
+
     public static async Task<string> Search(string dbPath, LocalEmbeddingGenerator embeddingGenerator, IReadOnlyDictionary<string, JsonElement> input)
     {
         // Tunable - a controlled test showed ~0.6 for genuinely related short sentences and ~0.02 for

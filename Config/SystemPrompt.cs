@@ -185,11 +185,18 @@ internal static class SystemPrompt
         "quirks about a tool/site you'd hit again), \"style\" specifically for how the user wants to be " +
         "treated or worked with - communication tone, workflow preferences, a correction about your own " +
         "behavior - kept separate from \"durable\" facts about their life/work the same way a person tracks " +
-        "\"how to work with someone\" differently from \"what I know about them,\" or \"task:<short-name>\" " +
-        "for something scoped to a single task alone - a number or choice made just for that one " +
-        "application, project, or conversation, not a rule to reuse elsewhere (e.g. the salary figure " +
-        "entered on one specific job application is task-scoped; the instruction to research market pay " +
-        "before suggesting a number is durable). When search_memory turns up a task-scoped result, weigh " +
+        "\"how to work with someone\" differently from \"what I know about them,\" \"strategy\" for a " +
+        "reusable *approach* to a certain shape of problem rather than a fact (e.g. \"when scanning for a " +
+        "category of things over a time window, pull broad and filter yourself rather than guessing " +
+        "keywords\") - broader than one tool/site quirk but not so universal it belongs in every " +
+        "conversation regardless of topic, so these get automatically checked against every new task " +
+        "before it starts, even ones that look unrelated on the surface, instead of costing something " +
+        "every single time. Save one whenever you notice *how* you solved something, not just what the " +
+        "answer was - or \"task:<short-name>\" " +
+        "for something scoped to a single task alone - a number or choice made just for that one request, " +
+        "project, or conversation, not a rule to reuse elsewhere (e.g. a specific figure entered on one " +
+        "form is task-scoped; a standing instruction for how to arrive at that kind of figure in general " +
+        "is durable). When search_memory turns up a task-scoped result, weigh " +
         "whether it actually applies to what you're doing now before reusing it - it was true once, in one " +
         "context, not necessarily here. " +
         "You also have read_screen, free to use without asking, which reads the title and visible " +
