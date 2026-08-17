@@ -18,6 +18,7 @@ internal sealed class AuraSkin : IOverlaySkin
     private readonly TextBlock _wordmark;
     private readonly TextBlock _stateLabel;
     private readonly TextBlock _subLabel;
+    private readonly ProgressBar _progressBar;
     private readonly Button _modeButton;
     private readonly Button _sleepButton;
     private readonly Button _themeButton;
@@ -123,8 +124,38 @@ internal sealed class AuraSkin : IOverlaySkin
         FlatButtonStyle.Apply(_modeButton, cornerRadius: ModeButtonHeight / 2);
         _modeButton.Click += (_, _) => _actions?.SwitchActivationMode(_mode == ActivationMode.Prompted ? ActivationMode.KeyBind : ActivationMode.Prompted);
 
-        _stateLabel = new TextBlock { Text = "listening…", FontSize = 18, HorizontalAlignment = HorizontalAlignment.Center, Margin = new Thickness(0, 8, 0, 2) };
+        // A long activity string ("searching memory for \"...\"") used to
+        // just get hard-truncated at a fixed character count - lost
+        // information rather than showing it. A Viewbox (DownOnly so short
+        // text like "listening…" never gets scaled *up*) shrinks the whole
+        // line to fit the panel's width instead, so it stays fully legible
+        // just smaller - TruncateActivity below still exists as a safety
+        // net so a pathological wall of text doesn't shrink to an
+        // illegible sliver, just raised well past the old 36-char cutoff.
+        _stateLabel = new TextBlock { Text = "listening…", FontSize = 18 };
+        var stateLabelBox = new Viewbox
+        {
+            Child = _stateLabel,
+            StretchDirection = StretchDirection.DownOnly,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            Margin = new Thickness(0, 8, 0, 2),
+        };
         _subLabel = new TextBlock { Text = "just start talking", FontSize = 15, HorizontalAlignment = HorizontalAlignment.Center };
+        // Indeterminate - there's no real "% complete" for an agentic task
+        // with an unknown number of tool-call rounds ahead of it, so this
+        // is a sliding/pulsing "actively working" signal, not a progress
+        // claim. Swaps in for _subLabel's idle hint while a task is
+        // running (see ApplyState) rather than sitting alongside it.
+        _progressBar = new ProgressBar
+        {
+            IsIndeterminate = true,
+            IsVisible = false,
+            Height = 6,
+            Width = 140,
+            CornerRadius = new CornerRadius(3),
+            Background = new SolidColorBrush(Color.FromArgb(60, 0, 0, 0)),
+            Foreground = MakeAngledGradient(AuraPalette.Accent, AuraPalette.Accent2, 30),
+        };
 
         // .aura .status-bar { justify-content: space-between; } .aura .chip
         // { background: var(--glass-bg-hi); border: 1px solid
@@ -169,8 +200,9 @@ internal sealed class AuraSkin : IOverlaySkin
         // (wordmark + buttons), not part of the "look centered" content.
         var coreContent = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
         coreContent.Children.Add(faceCanvas);
-        coreContent.Children.Add(_stateLabel);
+        coreContent.Children.Add(stateLabelBox);
         coreContent.Children.Add(_subLabel);
+        coreContent.Children.Add(_progressBar);
         coreContent.Children.Add(_modeButton);
 
         var stack = new Grid();
@@ -228,6 +260,13 @@ internal sealed class AuraSkin : IOverlaySkin
                     ? TruncateActivity(activity).ToLowerInvariant()
                     : "listening…";
         _subLabel.Text = state.Asleep ? "press ctrl+alt+space to wake" : "just start talking";
+        // A task in progress swaps the idle hint for the indeterminate bar
+        // instead of showing both - "just start talking" doesn't apply
+        // once she's already mid-task, and showing an inert hint next to
+        // an active progress bar would read as contradictory.
+        bool showProgress = state.IsBusy && !state.Asleep;
+        _subLabel.IsVisible = !showProgress;
+        _progressBar.IsVisible = showProgress;
 
         // .sleep-toggle[aria-pressed="true"] in the mockup: solid
         // accent-gradient fill + glow while asleep, instead of only the
@@ -455,6 +494,10 @@ internal sealed class AuraSkin : IOverlaySkin
 
     // The narrow panel can't fit a long activity string ("searching memory
     // for \"...\"") on one line - cap it rather than let it wrap/overflow.
+    // The state label now shrinks to fit via a Viewbox (see the
+    // constructor) instead of relying on truncation for normal-length
+    // activity text - this cutoff only exists as a floor so a truly
+    // pathological string doesn't shrink to an illegible sliver.
     private static string TruncateActivity(string text) =>
-        text.Length > 36 ? string.Concat(text.AsSpan(0, 36), "…") : text;
+        text.Length > 90 ? string.Concat(text.AsSpan(0, 90), "…") : text;
 }

@@ -22,6 +22,7 @@ internal sealed class WebSkin : IOverlaySkin
     private readonly Ellipse _statusDot;
     private readonly TextBlock _stateLabel;
     private readonly TextBlock _subLabel;
+    private readonly ProgressBar _progressBar;
     private readonly TextBlock _logHead;
     private readonly TextBlock _chromeChip;
     private readonly TextBlock _gmailChip;
@@ -125,11 +126,43 @@ internal sealed class WebSkin : IOverlaySkin
         headerBar.Children.Add(new Rectangle { Height = 1.5, Fill = EdgeHiBrush, HorizontalAlignment = HorizontalAlignment.Stretch });
         headerBar.Children.Add(new Rectangle { Height = 2, Fill = EdgeBrush, HorizontalAlignment = HorizontalAlignment.Stretch });
 
-        _stateLabel = new TextBlock { Text = "LISTENING", Foreground = TextBrush, FontFamily = WebFont, FontWeight = FontWeight.Bold, FontSize = 16, HorizontalAlignment = HorizontalAlignment.Center, Margin = new Thickness(0, 8, 0, 2) };
+        // A long activity string ("SEARCHING MEMORY FOR \"...\"") used to
+        // just get hard-truncated at a fixed character count - lost
+        // information rather than showing it. A Viewbox (DownOnly so short
+        // text like LISTENING never gets scaled *up*) shrinks the whole
+        // line to fit the panel's width instead, so it stays fully legible
+        // just smaller - TruncateActivity below still exists as a safety
+        // net so a pathological wall of text doesn't shrink to an
+        // illegible sliver, just raised well past the old 36-char cutoff.
+        _stateLabel = new TextBlock { Text = "LISTENING", Foreground = TextBrush, FontFamily = WebFont, FontWeight = FontWeight.Bold, FontSize = 16 };
+        var stateLabelBox = new Viewbox
+        {
+            Child = _stateLabel,
+            StretchDirection = StretchDirection.DownOnly,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            Margin = new Thickness(0, 8, 0, 2),
+        };
 
         // The mockup's blinking cursor (.web .cursor) next to the sub-label
         // was dropped per direct request - read as visual noise in practice.
         _subLabel = new TextBlock { Text = "JUST START TALKING", Foreground = TextLoBrush, FontFamily = WebFont, FontSize = 14, HorizontalAlignment = HorizontalAlignment.Center };
+        // Indeterminate - there's no real "% complete" for an agentic task
+        // with an unknown number of tool-call rounds ahead of it, so this
+        // is a sliding/pulsing "actively working" signal, not a progress
+        // claim. Swaps in for _subLabel's idle hint while a task is
+        // running (see ApplyState) rather than sitting alongside it. Square
+        // corners and the EdgeHi/Edge brush pair, matching this skin's
+        // blocky pixel-art chrome rather than a soft rounded bar.
+        _progressBar = new ProgressBar
+        {
+            IsIndeterminate = true,
+            IsVisible = false,
+            Height = 4,
+            Width = 140,
+            CornerRadius = new CornerRadius(0),
+            Background = EdgeBrush,
+            Foreground = EdgeHiBrush,
+        };
 
         _modeButton = new Button
         {
@@ -187,8 +220,9 @@ internal sealed class WebSkin : IOverlaySkin
         // skin's natural content is shorter than ARC's.
         var innerContent = new StackPanel { Margin = new Thickness(16, 0, 16, 0) };
         innerContent.Children.Add(faceGrid);
-        innerContent.Children.Add(_stateLabel);
+        innerContent.Children.Add(stateLabelBox);
         innerContent.Children.Add(_subLabel);
+        innerContent.Children.Add(_progressBar);
         innerContent.Children.Add(_modeButton);
         innerContent.Children.Add(_logHead);
         innerContent.Children.Add(_transcript.Root);
@@ -275,6 +309,13 @@ internal sealed class WebSkin : IOverlaySkin
                     ? TruncateActivity(activity).ToUpperInvariant()
                     : "LISTENING";
         _subLabel.Text = state.Asleep ? "PRESS CTRL+ALT+SPACE TO WAKE" : "JUST START TALKING";
+        // A task in progress swaps the idle hint for the indeterminate bar
+        // instead of showing both - "JUST START TALKING" doesn't apply
+        // once she's already mid-task, and showing an inert hint next to
+        // an active progress bar would read as contradictory.
+        bool showProgress = state.IsBusy && !state.Asleep;
+        _subLabel.IsVisible = !showProgress;
+        _progressBar.IsVisible = showProgress;
 
         // .pixel-btn[aria-pressed="true"] in the mockup: cyan fill + dark
         // text while asleep, instead of only the face communicating it.
@@ -463,6 +504,10 @@ internal sealed class WebSkin : IOverlaySkin
 
     // The narrow panel can't fit a long activity string ("searching memory
     // for \"...\"") on one line - cap it rather than let it wrap/overflow.
+    // The state label now shrinks to fit via a Viewbox (see the
+    // constructor) instead of relying on truncation for normal-length
+    // activity text - this cutoff only exists as a floor so a truly
+    // pathological string doesn't shrink to an illegible sliver.
     private static string TruncateActivity(string text) =>
-        text.Length > 36 ? string.Concat(text.AsSpan(0, 36), "…") : text;
+        text.Length > 90 ? string.Concat(text.AsSpan(0, 90), "…") : text;
 }

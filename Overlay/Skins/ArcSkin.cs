@@ -47,6 +47,7 @@ internal sealed class ArcSkin : IOverlaySkin
     private readonly TextBlock _wordmark;
     private readonly TextBlock _stateLabel;
     private readonly TextBlock _subLabel;
+    private readonly ProgressBar _progressBar;
     private readonly Button _modeButton;
     private readonly Button _sleepButton;
     private readonly Button _themeButton;
@@ -105,13 +106,26 @@ internal sealed class ArcSkin : IOverlaySkin
         header.Children.Add(_wordmark);
         header.Children.Add(headerButtons);
 
+        // A long activity string ("SEARCHING MEMORY FOR \"...\"") used to
+        // just get hard-truncated at a fixed character count - lost
+        // information rather than showing it. A Viewbox (DownOnly so short
+        // text like LISTENING never gets scaled *up*) shrinks the whole
+        // line to fit the panel's width instead, so it stays fully legible
+        // just smaller - TruncateActivity below still exists as a safety
+        // net so a pathological wall of text doesn't shrink to an
+        // illegible sliver, just raised well past the old 36-char cutoff.
         _stateLabel = new TextBlock
         {
             Text = "LISTENING",
             Foreground = _accentBrush,
             FontFamily = new FontFamily("Consolas"),
             FontSize = 15,
-            HorizontalAlignment = HorizontalAlignment.Center,
+        };
+        var stateLabelBox = new Viewbox
+        {
+            Child = _stateLabel,
+            StretchDirection = StretchDirection.DownOnly,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
             Margin = new Thickness(0, 10, 0, 2),
         };
         _subLabel = new TextBlock
@@ -121,6 +135,21 @@ internal sealed class ArcSkin : IOverlaySkin
             FontFamily = new FontFamily("Consolas"),
             FontSize = 13,
             HorizontalAlignment = HorizontalAlignment.Center,
+        };
+        // Indeterminate - there's no real "% complete" for an agentic task
+        // with an unknown number of tool-call rounds ahead of it, so this
+        // is a sliding/pulsing "actively working" signal, not a progress
+        // claim. Swaps in for _subLabel's idle hint while a task is
+        // running (see ApplyState) rather than sitting alongside it.
+        _progressBar = new ProgressBar
+        {
+            IsIndeterminate = true,
+            IsVisible = false,
+            Height = 3,
+            Width = 140,
+            CornerRadius = new CornerRadius(0),
+            Background = _hairBrush,
+            Foreground = _accentBrush,
         };
 
         _modeButton = new Button
@@ -159,8 +188,9 @@ internal sealed class ArcSkin : IOverlaySkin
         var stack = new StackPanel { Margin = new Thickness(18) };
         stack.Children.Add(header);
         stack.Children.Add(_face);
-        stack.Children.Add(_stateLabel);
+        stack.Children.Add(stateLabelBox);
         stack.Children.Add(_subLabel);
+        stack.Children.Add(_progressBar);
         stack.Children.Add(_modeButton);
         stack.Children.Add(_transcript.Root);
         stack.Children.Add(statusBar);
@@ -216,6 +246,13 @@ internal sealed class ArcSkin : IOverlaySkin
                     : "LISTENING";
         _subLabel.Text = state.Asleep ? "CTRL+ALT+SPACE TO WAKE" : "JUST START TALKING";
         _stateLabel.Opacity = state.Asleep ? 0.55 : 1.0;
+        // A task in progress swaps the idle hint for the indeterminate bar
+        // instead of showing both - "JUST START TALKING" doesn't apply
+        // once she's already mid-task, and showing an inert hint next to
+        // an active progress bar would read as contradictory.
+        bool showProgress = state.IsBusy && !state.Asleep;
+        _subLabel.IsVisible = !showProgress;
+        _progressBar.IsVisible = showProgress;
 
         // .asleep .wordmark { opacity:.4; text-shadow:none } in the mockup -
         // reads as "powered off" rather than just quiet.
@@ -387,6 +424,10 @@ internal sealed class ArcSkin : IOverlaySkin
 
     // The narrow panel can't fit a long activity string ("searching memory
     // for \"...\"") on one line - cap it rather than let it wrap/overflow.
+    // The state label now shrinks to fit via a Viewbox (see the
+    // constructor) instead of relying on truncation for normal-length
+    // activity text - this cutoff only exists as a floor so a truly
+    // pathological string doesn't shrink to an illegible sliver.
     private static string TruncateActivity(string text) =>
-        text.Length > 36 ? string.Concat(text.AsSpan(0, 36), "…") : text;
+        text.Length > 90 ? string.Concat(text.AsSpan(0, 90), "…") : text;
 }
