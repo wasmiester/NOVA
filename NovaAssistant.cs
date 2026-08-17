@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using System.Text;
 using System.Text.Json;
@@ -585,7 +586,7 @@ internal sealed class NovaAssistant
         {
         }
 
-        Console.WriteLine("\n[interrupted]");
+        StatusLog.WriteLine("\n[interrupted]");
     }
 
     // Called by AudioCapturePipeline once a finished utterance clears the
@@ -638,7 +639,7 @@ internal sealed class NovaAssistant
                 return;
             }
 
-            Console.WriteLine($"[interjection] You: {text}");
+            StatusLog.WriteLine($"[interjection] You: {text}");
             RecordTranscript(isUser: true, text);
 
             if (!IsBusy)
@@ -724,14 +725,14 @@ internal sealed class NovaAssistant
     {
         if (IsBusy || _pendingAuthorization is not null)
         {
-            Console.WriteLine("\n[hotkey: busy right now - ignored]\n");
+            StatusLog.WriteLine("\n[hotkey: busy right now - ignored]\n");
             return;
         }
 
         bool wasAsleep = !_engaged;
         _engaged = true;
         string phrase = ReadyPhrases[_random.Next(ReadyPhrases.Length)];
-        Console.WriteLine(wasAsleep ? $"\n[hotkey: woke up - {phrase}]" : $"\n[hotkey: {phrase}]");
+        StatusLog.WriteLine(wasAsleep ? $"\n[hotkey: woke up - {phrase}]" : $"\n[hotkey: {phrase}]");
         _ = SpeakLocalReplyAsync(phrase);
     }
 
@@ -759,7 +760,7 @@ internal sealed class NovaAssistant
         }
 
         _taskIsAmbientInitiated = true;
-        Console.WriteLine($"\n[ambient: {filePath} flagged as possibly worth mentioning...]");
+        StatusLog.WriteLine($"\n[ambient: {filePath} flagged as possibly worth mentioning...]");
         string prompt =
             $"[Ambient trigger, not a user message - the file \"{filePath}\" was just modified, and a " +
             "quick automated check flagged it as possibly worth proactively mentioning. Current " +
@@ -789,7 +790,7 @@ internal sealed class NovaAssistant
         }
 
         _taskIsAmbientInitiated = true;
-        Console.WriteLine($"\n[email alert: {summary}]");
+        StatusLog.WriteLine($"\n[email alert: {summary}]");
         string prompt = $"[Ambient trigger, not a user message - {summary} Mention it to the user briefly in one short sentence.]";
         _ = ProcessTextInputAsync(prompt);
     }
@@ -812,7 +813,7 @@ internal sealed class NovaAssistant
         }
 
         _taskIsAmbientInitiated = true;
-        Console.WriteLine($"\n[calendar reminder: {summary}]");
+        StatusLog.WriteLine($"\n[calendar reminder: {summary}]");
         string prompt = $"[Ambient trigger, not a user message - upcoming calendar event: {summary} Mention it to the user briefly in one short sentence.]";
         _ = ProcessTextInputAsync(prompt);
     }
@@ -836,7 +837,7 @@ internal sealed class NovaAssistant
         }
 
         _taskIsAmbientInitiated = true;
-        Console.WriteLine("\n[ambient: terminal output flagged as possibly worth mentioning...]");
+        StatusLog.WriteLine("\n[ambient: terminal output flagged as possibly worth mentioning...]");
         string prompt =
             "[Ambient trigger, not a user message - recent output from the watched terminal was flagged " +
             $"as possibly worth proactively mentioning:\n\n{outputSnippet}\n\nIf there's a genuinely " +
@@ -861,7 +862,7 @@ internal sealed class NovaAssistant
         // Immediate feedback that something is happening - otherwise there's
         // total silence for the entire VAD-confirm + transcription pipeline
         // before any text shows up at all.
-        Console.WriteLine("[transcribing...]");
+        StatusLog.WriteLine("[transcribing...]");
         Volatile.Write(ref _currentActivity, "transcribing");
 
         string? input;
@@ -902,7 +903,7 @@ internal sealed class NovaAssistant
             return;
         }
 
-        Console.WriteLine($"You: {input}");
+        StatusLog.WriteLine($"You: {input}");
         RecordTranscript(isUser: true, input);
         Volatile.Write(ref _currentActivity, null); // transcribing's done - the tool loop sets its own activity from here
 
@@ -922,7 +923,7 @@ internal sealed class NovaAssistant
         if (VoiceControlPhrases.ContainsSleepPhrase(input))
         {
             _engaged = false;
-            Console.WriteLine("[going dormant]");
+            StatusLog.WriteLine("[going dormant]");
             await SpeakLocalReplyAsync("Okay, taking a break.");
             Volatile.Write(ref _isBusy, 0);
             return;
@@ -958,7 +959,7 @@ internal sealed class NovaAssistant
             // way, so the confirmation always gets spoken regardless of
             // which direction _engaged just moved.
             _engaged = mode == ActivationMode.Prompted;
-            Console.WriteLine($"\n[activation mode -> {mode}]\n");
+            StatusLog.WriteLine($"\n[activation mode -> {mode}]\n");
             await SpeakLocalReplyAsync($"Switched to {DescribeMode(mode)} mode.");
         }
         finally
@@ -990,7 +991,7 @@ internal sealed class NovaAssistant
         }
 
         _engaged = engaged;
-        Console.WriteLine(engaged ? "\n[woke up (overlay)]\n" : "\n[going dormant (overlay)]\n");
+        StatusLog.WriteLine(engaged ? "\n[woke up (overlay)]\n" : "\n[going dormant (overlay)]\n");
     }
 
     // The overlay's Gate 2 confirm popup (see ConfirmPopup) - the *only*
@@ -1122,7 +1123,7 @@ internal sealed class NovaAssistant
             });
 
             Volatile.Write(ref _needsGoogleCredentials, false);
-            Console.WriteLine("\n[Google account connected via overlay]\n");
+            StatusLog.WriteLine("\n[Google account connected via overlay]\n");
 
             // This can land while Nova is otherwise idle, and
             // wrapping just the spoken confirmation (not the OAuth wait
@@ -1143,7 +1144,7 @@ internal sealed class NovaAssistant
             // already dismissed the popup, so there's nothing to report
             // back; just let the wait actually stop instead of leaving
             // _googleConnecting stuck true underneath a closed popup.
-            Console.WriteLine("\n[Google connect cancelled]\n");
+            StatusLog.WriteLine("\n[Google connect cancelled]\n");
         }
         catch (Exception ex)
         {
@@ -1448,11 +1449,11 @@ internal sealed class NovaAssistant
                     // raw command (see ToolCatalog) - keep the actual command in the logs anyway.
                     foreach (PendingToolCall call in gatedCalls.Where(call => call.Name == "run_command"))
                     {
-                        Console.WriteLine($"[command: {ToolInput.GetString(call.Input, "command")}]");
+                        StatusLog.WriteLine($"[command: {ToolInput.GetString(call.Input, "command")}]");
                     }
 
                     await SpeakAndWaitAsync(ask, cts.Token);
-                    Console.WriteLine($"\n[awaiting authorization: {ask}]\n");
+                    StatusLog.WriteLine($"\n[awaiting authorization: {ask}]\n");
                     RecordTranscript(isUser: false, ask, isPending: true);
                     break;
                 }
@@ -1551,7 +1552,7 @@ internal sealed class NovaAssistant
 
                     Volatile.Write(ref _pendingGate2Prompt, gate2PopupText);
                     await SpeakAndWaitAsync(gate2Ask, cts.Token);
-                    Console.WriteLine($"\n[awaiting Gate 2 review: {gate2Ask}]\n");
+                    StatusLog.WriteLine($"\n[awaiting Gate 2 review: {gate2Ask}]\n");
                     RecordTranscript(isUser: false, gate2Ask, isPending: true);
                     break;
                 }
@@ -1575,7 +1576,7 @@ internal sealed class NovaAssistant
                     cts.Token.ThrowIfCancellationRequested();
 
                     string status = ToolDescriptions.DescribeToolStatus(call);
-                    Console.WriteLine($"[{status}...]");
+                    StatusLog.WriteLine($"[{status}...]");
                     // Same text as the console line above, surfaced to the
                     // overlay too - see OverlayState.CurrentActivity. Left
                     // in place (not cleared) once this round's tools finish -
@@ -1586,7 +1587,16 @@ internal sealed class NovaAssistant
                     // she starts speaking (the overlay already hides it
                     // then) or the task ends.
                     Volatile.Write(ref _currentActivity, status);
+                    // Completion timing, not just start - the start-only
+                    // log couldn't distinguish "moved on immediately" from
+                    // "this exact call sat for two minutes," which is
+                    // exactly the ambiguity a live "hanging" report needed
+                    // resolved (long silent gaps in the console with no way
+                    // to tell which call was actually slow).
+                    var toolStopwatch = Stopwatch.StartNew();
                     (string content, bool isError) = await ExecuteToolAsync(call.Name, call.Input, cts.Token);
+                    toolStopwatch.Stop();
+                    StatusLog.WriteLine($"[{status} - done in {toolStopwatch.ElapsedMilliseconds}ms{(isError ? ", error" : "")}]");
                     results.Add(new ToolResultBlockParam(call.Id) { Content = content, IsError = isError });
                 }
 
@@ -1610,7 +1620,7 @@ internal sealed class NovaAssistant
         }
         catch (AnthropicApiException ex)
         {
-            Console.WriteLine($"\n[API error: {ex.Message}]\n");
+            StatusLog.WriteLine($"\n[API error: {ex.Message}]\n");
             await TryAnnounceUnhandledErrorAsync();
         }
         catch (Exception ex)
@@ -1621,7 +1631,7 @@ internal sealed class NovaAssistant
             // the isBusy-reset below never runs if this method exits via an
             // uncaught exception from its fire-and-forget caller.
             ErrorLog.Log("ProcessTextInputAsync", ex);
-            Console.WriteLine($"\n[error: {ex.Message}]\n");
+            StatusLog.WriteLine($"\n[error: {ex.Message}]\n");
             await TryAnnounceUnhandledErrorAsync();
         }
         finally
@@ -1721,7 +1731,7 @@ internal sealed class NovaAssistant
                     {
                         if (!novaPrefixWritten)
                         {
-                            Console.Write("Nova: ");
+                            StatusLog.Write("Nova: ");
                             novaPrefixWritten = true;
                         }
 
@@ -1833,8 +1843,29 @@ internal sealed class NovaAssistant
         }
     }
 
-    private async Task<(string Content, bool IsError)> ExecuteToolAsync(string name, IReadOnlyDictionary<string, JsonElement> input, CancellationToken cancellationToken)
+    // Built-in tools (unlike DynamicToolRuntime's self-authored ones, which
+    // already had this) had no execution bound at all - a single call could
+    // await indefinitely with nothing surfaced to the user until it either
+    // finished or the whole process exited. Confirmed live: a job-tracker
+    // task's search_email calls, made in rapid succession, went silent for
+    // minutes at a time with no console output and no spoken update -
+    // plausibly Gmail API throttling/retry-backoff on the underlying HTTP
+    // client, though the exact cause was never pinned down since nothing
+    // bounded it long enough to surface an error either way. Same shape as
+    // DynamicToolRuntime.RunAsync's own 60s bound (matched exactly, not
+    // independently chosen) - a linked token shadowing the parameter name
+    // means every existing call site below keeps working unchanged; only
+    // a genuine stop request (checked against the real, outer token,
+    // not this method's own timeout-bound one) still re-throws to unwind
+    // the whole turn the way it already did.
+    private static readonly TimeSpan ToolExecutionTimeout = TimeSpan.FromSeconds(60);
+
+    private async Task<(string Content, bool IsError)> ExecuteToolAsync(string name, IReadOnlyDictionary<string, JsonElement> input, CancellationToken callerCancellationToken)
     {
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(callerCancellationToken);
+        timeoutCts.CancelAfter(ToolExecutionTimeout);
+        CancellationToken cancellationToken = timeoutCts.Token;
+
         try
         {
             switch (name)
@@ -2061,7 +2092,7 @@ internal sealed class NovaAssistant
                     return ($"Unknown tool: {name}", true);
             }
         }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        catch (OperationCanceledException) when (callerCancellationToken.IsCancellationRequested)
         {
             // A real cancellation (the turn's own cts, cancelled by
             // Interrupt() - now only reachable via an explicit stop
@@ -2069,7 +2100,10 @@ internal sealed class NovaAssistant
             // internal timeout (those are caught and converted to a
             // friendly message *inside* the tool itself - CommandRunner/
             // DynamicToolRuntime never let their own timeouts reach here
-            // as an exception at all). Previously this was caught by the
+            // as an exception at all). Checked against the real outer
+            // token, not this method's own timeout-bound one, so a genuine
+            // stop request is never confused with ExecuteToolAsync's own
+            // ToolExecutionTimeout below. Previously this was caught by the
             // blanket catch below and turned into a normal, non-throwing
             // ("Tool error: ...", true) result - which meant the tool-call
             // loop in ProcessTextInputAsync just moved on to the *next*
@@ -2079,6 +2113,18 @@ internal sealed class NovaAssistant
             // catch (OperationCanceledException), the same path a
             // cancellation between rounds already took.
             throw;
+        }
+        catch (OperationCanceledException)
+        {
+            // Reached only when the outer/real token *wasn't* the trigger -
+            // this call ran past ToolExecutionTimeout on its own. Returned
+            // as a normal error tool_result (not re-thrown) so the turn
+            // keeps going and Claude can react - tell the user it's taking
+            // unusually long, retry, or try a narrower approach - instead
+            // of the whole task just dying silently the way it did before
+            // this bound existed.
+            return ($"Tool timed out after {ToolExecutionTimeout.TotalSeconds:0} seconds - it may be worth telling " +
+                    "the user this specific step is taking unusually long.", true);
         }
         catch (Exception ex)
         {
@@ -2183,7 +2229,7 @@ internal sealed class NovaAssistant
             // said in Claude's own voice instead of a separate canned one.
             _toolFailuresThisTask[name] = 0;
             string revertMessage = await ToolBuilder.RevertAsync(_selfContainedToolsDir, _toolRegistryDbPath, name, CancellationToken.None);
-            Console.WriteLine($"\n[self-repair] {revertMessage}\n");
+            StatusLog.WriteLine($"\n[self-repair] {revertMessage}\n");
             return ($"The \"{name}\" tool failed 3 times in a row: {ex.Message}\n{revertMessage} Tell the user this happened.", true);
         }
     }
