@@ -922,9 +922,14 @@ internal static class ToolCatalog
         Tool buildToolTool = BuildTool(
             "build_tool",
             "Builds a new self-contained tool, or rebuilds/updates an existing one by reusing the same " +
-            "name - a small, isolated piece of C# for a capability that isn't already a built-in tool. " +
-            "Prefer a free API/library, and only reach for a paid/metered one after actually exhausting " +
-            "free options - set uses_paid_api honestly either way, since that's what determines whether " +
+            "name - a small, isolated piece of C# for a capability that isn't already a built-in tool. Not " +
+            "limited to wrapping an external API - a NuGet library (e.g. a PDF-parsing library, to read a " +
+            "file type nothing built-in handles) or a purely algorithmic tool with no external dependency " +
+            "at all are just as valid a shape for this; API integration is one option here, not the " +
+            "default assumption, and \"there's no API for that\" is not a reason this can't be built. When " +
+            "it does call an external service, prefer a free API/library, and only reach for a " +
+            "paid/metered one after actually exhausting free options - set uses_paid_api honestly either " +
+            "way, since that's what determines whether " +
             "the user gets an explicit heads-up before it can ever run (see below). Compiled and " +
             "version-controlled automatically (a git commit per successful build); a build that fails to " +
             "compile registers nothing and leaves any previous working version untouched - the compiler " +
