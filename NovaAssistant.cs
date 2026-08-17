@@ -1596,7 +1596,16 @@ internal sealed class NovaAssistant
                     var toolStopwatch = Stopwatch.StartNew();
                     (string content, bool isError) = await ExecuteToolAsync(call.Name, call.Input, cts.Token);
                     toolStopwatch.Stop();
-                    StatusLog.WriteLine($"[{status} - done in {toolStopwatch.ElapsedMilliseconds}ms{(isError ? ", error" : "")}]");
+                    // Previously only logged *that* a call errored, not
+                    // what the error actually was - confirmed live as a
+                    // real diagnostic gap: two search_email calls errored
+                    // in one session and the console gave no way to tell
+                    // why without reproducing it. content already carries
+                    // the real message ("Tool error: {ex.Message}", see
+                    // ExecuteToolAsync) - just wasn't being surfaced here.
+                    StatusLog.WriteLine(isError
+                        ? $"[{status} - done in {toolStopwatch.ElapsedMilliseconds}ms, error: {content}]"
+                        : $"[{status} - done in {toolStopwatch.ElapsedMilliseconds}ms]");
                     results.Add(new ToolResultBlockParam(call.Id) { Content = content, IsError = isError });
                 }
 

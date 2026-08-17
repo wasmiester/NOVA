@@ -206,6 +206,7 @@ internal static class ToolDescriptions
         "browser_upload" => $"uploading to \"{ToolInput.GetString(call.Input, "label") ?? "a field"}\"",
         "browser_click" => $"clicking \"{ToolInput.GetString(call.Input, "label") ?? "a button"}\"",
         "search_email" => $"searching your email for \"{ToolInput.GetString(call.Input, "query") ?? ""}\"",
+        "read_email" => "reading the email",
         "send_email" => $"sending an email to {ToolInput.GetString(call.Input, "to") ?? "someone"}",
         "list_calendar_events" => "checking your calendar",
         "create_calendar_event" => $"adding \"{ToolInput.GetString(call.Input, "summary") ?? "an event"}\" to your calendar",
@@ -215,7 +216,14 @@ internal static class ToolDescriptions
         "replace_in_doc" => $"replacing \"{ToolInput.GetString(call.Input, "find_text") ?? "text"}\" in the doc",
         "search_drive" => $"searching your Drive for \"{ToolInput.GetString(call.Input, "query") ?? ""}\"",
         "upload_to_drive" => $"uploading \"{ToolInput.GetString(call.Input, "local_file_path") ?? "a file"}\" to Drive",
-        "read_sheet" => "reading the spreadsheet",
+        // Previously always the same fixed string regardless of which
+        // spreadsheet/range - confirmed live as a real gap: two
+        // back-to-back "reading the spreadsheet" console lines gave no way
+        // to tell whether that was a genuine duplicate read or two
+        // legitimately different reads.
+        "read_sheet" => ToolInput.GetString(call.Input, "range") is { } sheetRange
+            ? $"reading the spreadsheet ({sheetRange})"
+            : "reading the spreadsheet",
         "create_sheet" => $"creating \"{ToolInput.GetString(call.Input, "title") ?? "a spreadsheet"}\"",
         "append_sheet_rows" => "adding rows to the spreadsheet",
         "update_sheet_range" => $"updating {ToolInput.GetString(call.Input, "range") ?? "a range"} in the spreadsheet",
