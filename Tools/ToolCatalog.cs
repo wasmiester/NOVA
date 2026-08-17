@@ -574,7 +574,7 @@ internal static class ToolCatalog
         Tool searchEmailTool = BuildTool(
             "search_email",
             "Searches the user's Gmail using Gmail's own search syntax (e.g. \"is:unread\", " +
-            "\"from:alice@example.com\", \"subject:invoice\") and returns matching messages (sender, " +
+            "\"from:alice@example.com\", \"subject:invoice\") and returns matching messages (sender, date, " +
             "subject, snippet). Read-only and always allowed. Requires the user's Google account to be " +
             "connected (GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET in secrets/.env) - if it isn't, say so.",
             new
@@ -711,8 +711,9 @@ internal static class ToolCatalog
         Tool searchDriveTool = BuildTool(
             "search_drive",
             "Searches the user's Google Drive using Drive's own query syntax (e.g. \"name contains " +
-            "'resume'\", \"mimeType = 'application/pdf'\") and returns matching files (name, type, id). " +
-            "Read-only and always allowed. Requires the user's Google account to be connected.",
+            "'resume'\", \"mimeType = 'application/pdf'\") and returns matching files (name, type, last " +
+            "modified date, id, link). Read-only and always allowed. Requires the user's Google account to " +
+            "be connected.",
             new
             {
                 type = "object",

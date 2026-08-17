@@ -14,7 +14,7 @@ using Message = Google.Apis.Gmail.v1.Data.Message;
 
 namespace Nova;
 
-internal sealed record EmailSummary(string Id, string From, string Subject, string Snippet);
+internal sealed record EmailSummary(string Id, string From, string Subject, string Snippet, string Date);
 
 internal sealed class GmailClient
 {
@@ -47,7 +47,7 @@ internal sealed class GmailClient
             return "No matching emails found.";
         }
 
-        return string.Join("\n", results.Select(m => $"From: {m.From} | Subject: {m.Subject} | {m.Snippet}"));
+        return string.Join("\n", results.Select(m => $"From: {m.From} | Date: {m.Date} | Subject: {m.Subject} | {m.Snippet}"));
     }
 
     // Used by GmailWatcher to poll for new mail - kept separate from
@@ -64,13 +64,30 @@ internal sealed class GmailClient
             return [];
         }
 
-        var results = new List<EmailSummary>();
-        foreach (Message stub in list.Messages)
+        // Each Get is an independent, read-only fetch of a different
+        // message - previously awaited one at a time in the loop below,
+        // meaning a broad query matching close to maxResults messages paid
+        // for that many sequential Gmail API round-trips in a row. Across a
+        // task making several broad searches back to back (exactly the
+        // pattern a multi-company job-tracker lookup produces), that adds
+        // up to real, visible wall-clock time with no intermediate status
+        // update in between - fetching them concurrently instead cuts that
+        // down to roughly one round-trip's worth of latency.
+        Message[] fullMessages = await Task.WhenAll(
+            list.Messages.Select(stub => _service.Users.Messages.Get(UserId, stub.Id).ExecuteAsync(cancellationToken)));
+
+        var results = new List<EmailSummary>(fullMessages.Length);
+        foreach (Message full in fullMessages)
         {
-            Message full = await _service.Users.Messages.Get(UserId, stub.Id).ExecuteAsync(cancellationToken);
             string subject = HeaderValue(full, "Subject") ?? "(no subject)";
             string from = HeaderValue(full, "From") ?? "(unknown sender)";
-            results.Add(new EmailSummary(full.Id, from, subject, full.Snippet ?? ""));
+            // The Date header was sitting right here unused - Gmail's API
+            // always returns it on the same full-message fetch already made
+            // for Subject/From above, it just wasn't being read out. Found
+            // live: a job-tracker task needed "date applied" and had no way
+            // to get it from search_email's output at all.
+            string date = HeaderValue(full, "Date") ?? "(unknown date)";
+            results.Add(new EmailSummary(full.Id, from, subject, full.Snippet ?? "", date));
         }
 
         return results;

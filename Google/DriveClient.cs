@@ -42,10 +42,15 @@ internal sealed class DriveClient
             return "No matching files found.";
         }
 
+        // ModifiedTime/WebViewLink were already being requested in the
+        // Fields string above and fetched on every result, just never
+        // included here - the same kind of gap as search_email's missing
+        // Date (see GmailClient.FetchAsync's doc comment).
         var sb = new StringBuilder();
         foreach (DriveFile file in result.Files)
         {
-            sb.AppendLine($"{file.Name} ({file.MimeType}) - id: {file.Id}");
+            string modified = file.ModifiedTimeDateTimeOffset?.ToString("yyyy-MM-dd") ?? "unknown date";
+            sb.AppendLine($"{file.Name} ({file.MimeType}) - modified: {modified} - id: {file.Id} - {file.WebViewLink}");
         }
 
         return sb.ToString();
