@@ -103,18 +103,42 @@ internal sealed class GmailClient
 
         if (part.Parts is { Count: > 0 })
         {
-            // One pass preferring text/plain among the children, since a
-            // multipart/alternative wrapper lists both versions of the same
-            // content side by side - only fall back to HTML if no sibling
-            // at this level was plain text.
+            // Confirmed live as a real bug, not a hypothetical: always
+            // preferring a text/plain sibling here assumed the two
+            // alternatives carry equivalent content, just different
+            // formatting - false for at least one real sender (Indeed's
+            // application-confirmation emails). Their text/plain part is a
+            // deliberately minimal stub ("Your application has been
+            // submitted. Good luck!"), while the text/html alternative
+            // actually carries the job title, company name, and
+            // next-steps details a person sees when viewing the same
+            // email in a real client. Compare both siblings by actual
+            // content length instead and take the richer one - still
+            // favors plain text in the normal case where the two are
+            // roughly equivalent, since HTML-stripping mostly preserves
+            // the visible text length anyway.
+            string? plainSibling = null;
+            string? htmlSibling = null;
             foreach (MessagePart child in part.Parts)
             {
                 if (child.MimeType == "text/plain" && child.Body?.Data is { } childPlainData)
                 {
-                    return DecodeBase64Url(childPlainData);
+                    plainSibling = DecodeBase64Url(childPlainData);
+                }
+                else if (child.MimeType == "text/html" && child.Body?.Data is { } childHtmlData)
+                {
+                    htmlSibling = StripHtml(DecodeBase64Url(childHtmlData));
                 }
             }
 
+            if (plainSibling is not null || htmlSibling is not null)
+            {
+                return (plainSibling?.Length ?? 0) >= (htmlSibling?.Length ?? 0) ? plainSibling : htmlSibling;
+            }
+
+            // Neither alternative sat directly at this level - recurse for
+            // a nested multipart (e.g. multipart/alternative wrapped
+            // inside multipart/mixed alongside an attachment).
             foreach (MessagePart child in part.Parts)
             {
                 if (GetPlainTextBody(child) is { } nested)
