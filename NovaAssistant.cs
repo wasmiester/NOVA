@@ -210,6 +210,72 @@ internal sealed class NovaAssistant
     // pattern the whole tool loop already uses.
     private readonly ConcurrentQueue<string> _pendingInterjections = new();
 
+    // Counts interjection audio that's been captured but not yet
+    // transcribed - read by the task-closing check (see its own call site)
+    // so it can wait for a still-in-flight transcription instead of racing
+    // ahead of it. Confirmed live: a barge-in landing near the tail of
+    // Nova's final reply gets queued for transcription on a background
+    // task, but the closing check runs the instant she finishes speaking -
+    // if transcription (real STT processing time) hasn't finished by then,
+    // the interjection simply isn't in _pendingInterjections yet, the check
+    // finds nothing, and the task ends with the interjection silently
+    // discarded once IsBusy goes false (see TranscribeAndQueueInterjectionAsync's
+    // own `if (!IsBusy) return`) - no acknowledgment, no response, exactly
+    // the "asked her something and she just didn't react" symptom.
+    private int _pendingInterjectionTranscriptions;
+
+    // Confirmed live as a real cost problem, not hypothetical: Gmail/
+    // Calendar watchers used to fire a full real-time alert (a real
+    // Sonnet call) for every single new item they found, completely
+    // unconditional on sleep state - asleep is meant to be true standby,
+    // not a background stream of paid calls. TriggerEmailAlert/
+    // TriggerCalendarReminder now queue here instead while asleep (see
+    // their own doc comments); TriggerReadyAcknowledgment drains it into
+    // one consolidated wake-up catch-up the moment she actually wakes,
+    // rather than each item paying for its own separate real-time alert.
+    private readonly ConcurrentQueue<string> _sleepAccumulatedEvents = new();
+
+    // Confirmed live as a real bug, not hypothetical: an ambient alert
+    // used to claim _isBusy and start speaking the instant it read false,
+    // with zero regard for whether a real task was actively running or
+    // had just that moment finished - landing in the exact split-second
+    // gap right after a real task ended, before the user had a chance to
+    // give their actual next instruction, then getting cancelled
+    // mid-sentence anyway once they did (DispatchUtterance's steal
+    // branch). An ambient update should never compete with or interrupt
+    // what the user is actually doing - it either rides along inside a
+    // task that's already running (see the mid-round/closing-check drain
+    // points, same shape as _pendingInterjections) or waits and gets
+    // folded into whatever the *next* task turns out to be (see the
+    // fresh-task context-building point) - genuinely idle delivery still
+    // happens, just gated by AmbientGraceAfterTask below so it can't land
+    // in that same narrow post-task gap.
+    private readonly ConcurrentQueue<string> _pendingAmbientUpdates = new();
+
+    // See _pendingAmbientUpdates' own doc comment and TriggerEmailAlert/
+    // TriggerCalendarReminder's use of this. Set the moment IsBusy is
+    // about to go false at the end of any task - deliberately generous
+    // rather than tuned tight, since the actual cost of waiting a few
+    // extra seconds is nothing next to the cost of interrupting the
+    // user's own next sentence.
+    private static readonly TimeSpan AmbientGraceAfterTask = TimeSpan.FromSeconds(8);
+    private DateTime? _lastTaskEndedAtUtc;
+
+    // True only while ProcessTextInputAsync's round loop is genuinely
+    // in flight - set right before the loop starts, cleared unconditionally
+    // in its own finally block (see lastRoundReached's doc comment there),
+    // covering every exit reason (a clean finish, a Gate 1/2 pause, an
+    // exception, a cancellation) the same way. Distinct from IsBusy on
+    // purpose: IsBusy stays true through a real SpeechCooldownMs tail after
+    // the loop has already fully exited, and a fast response can land
+    // inside that tail - confirmed live as the actual mechanism behind
+    // "I had to nudge her after the interjection didn't work": the
+    // interjection was correctly captured, but the round loop that was
+    // supposed to drain _pendingInterjections was already gone, so it just
+    // sat there unread. See TranscribeAndQueueInterjectionAsync's own use
+    // of this for the recovery.
+    private int _roundLoopActive;
+
     // The *current task's* conversation history, replayed back to Claude on
     // every request (Claude only remembers what's actually resent). Used to
     // grow across the whole session and never shrink, which meant every
@@ -627,7 +693,11 @@ internal sealed class NovaAssistant
     // neither should hard-cancel anything by default. Doesn't touch
     // _isBusy at all; the task already holding it is what eventually
     // surfaces this.
-    public void DispatchInterjection(float[] samples) => _ = TranscribeAndQueueInterjectionAsync(samples);
+    public void DispatchInterjection(float[] samples)
+    {
+        Interlocked.Increment(ref _pendingInterjectionTranscriptions);
+        _ = TranscribeAndQueueInterjectionAsync(samples);
+    }
 
     private async Task TranscribeAndQueueInterjectionAsync(float[] samples)
     {
@@ -647,6 +717,45 @@ internal sealed class NovaAssistant
                 return; // the task this was meant for already finished on its own
             }
 
+            if (Volatile.Read(ref _roundLoopActive) == 0)
+            {
+                // IsBusy is still true, but the round loop that was
+                // supposed to drain _pendingInterjections has already
+                // fully exited (see _roundLoopActive's own doc comment) -
+                // this landed in the SpeechCooldownMs tail after a clean
+                // finish, a Gate 1 pause, or a Gate 2 pause. Enqueuing here
+                // would mean nothing is ever going to read it - confirmed
+                // live as the actual mechanism behind "I had to nudge her
+                // after the interjection didn't work." Dispatch it as a
+                // fresh task instead of losing it silently - if a gate
+                // confirmation genuinely is pending, ProcessTextInputAsync's
+                // own entry logic already knows how to route this
+                // correctly regardless of which path it arrived through,
+                // and the stop-command check below doesn't apply here
+                // either (there's no still-running task left to stop).
+                // Same atomic claim-and-cleanup as DispatchUtterance's own
+                // steal branch, not a bare call - IsBusy reading true here
+                // doesn't guarantee it stays true until the dispatch
+                // actually happens (the original task's own cooldown could
+                // finish and something else - an ambient trigger, a fresh
+                // utterance - could claim it in between), so this needs
+                // the same race-proof handoff, not an assumption.
+                if (Interlocked.Exchange(ref _isBusy, 1) != 0)
+                {
+                    _tts.StopPlayback();
+                    _turnCts?.Cancel();
+                    Volatile.Write(ref _novaSpeaking, 0);
+                    Volatile.Write(ref _currentActivity, null);
+                }
+
+                while (_pendingInterjections.TryDequeue(out _))
+                {
+                }
+
+                _ = ProcessTextInputAsync(text);
+                return;
+            }
+
             // The one case that still hard-cancels: the utterance itself
             // reads as an explicit stop request, not just added context or
             // a follow-up (see StopIntentClassifier). Checked here, after
@@ -663,6 +772,10 @@ internal sealed class NovaAssistant
         catch (Exception ex)
         {
             ErrorLog.Log("TranscribeAndQueueInterjectionAsync", ex);
+        }
+        finally
+        {
+            Interlocked.Decrement(ref _pendingInterjectionTranscriptions);
         }
     }
 
@@ -708,6 +821,26 @@ internal sealed class NovaAssistant
         return string.Join(" ", parts);
     }
 
+    // Same shape as DrainPendingInterjections above - see
+    // _pendingAmbientUpdates' own doc comment for why this needs its own
+    // queue rather than sharing that one (an ambient update was never
+    // something the *user* said, so it shouldn't read back as if it was).
+    private string? DrainPendingAmbientUpdates()
+    {
+        if (_pendingAmbientUpdates.IsEmpty)
+        {
+            return null;
+        }
+
+        var parts = new List<string>();
+        while (_pendingAmbientUpdates.TryDequeue(out string? text))
+        {
+            parts.Add(text);
+        }
+
+        return string.Join(" ", parts);
+    }
+
     private static readonly string[] ReadyPhrases = ["I'm ready.", "Yes?", "Go ahead.", "At your service.", "What can I do?"];
     private readonly Random _random = new();
 
@@ -731,9 +864,58 @@ internal sealed class NovaAssistant
 
         bool wasAsleep = !_engaged;
         _engaged = true;
+
+        // The one point it's actually worth spending a real call on
+        // anything that came in while asleep - one consolidated catch-up
+        // instead of each item having paid for its own real-time alert
+        // (see _sleepAccumulatedEvents' own doc comment). Falls through to
+        // the plain ready-phrase below when nothing accumulated, same as
+        // before.
+        if (wasAsleep && DrainSleepAccumulatedEvents() is { Length: > 0 } accumulated)
+        {
+            // ProcessTextInputAsync itself never claims _isBusy - every
+            // other caller (DispatchUtterance, the other ambient
+            // triggers) does that atomically first. The plain IsBusy
+            // check at the top of this method already confirmed it was
+            // free moments ago, but same reasoning as
+            // TriggerAmbientFileSuggestion's own comment: that's not
+            // itself a safe claim, just a cheap early-out, so this still
+            // needs the real atomic claim before actually dispatching.
+            if (Interlocked.CompareExchange(ref _isBusy, 1, 0) != 0)
+            {
+                return;
+            }
+
+            _taskIsAmbientInitiated = true;
+            StatusLog.WriteLine("\n[hotkey: woke up - catching up on what came in while asleep]");
+            string prompt = "[Ambient trigger, not a user message - you just woke up from standby. Here's " +
+                $"everything that came in while asleep:\n{accumulated}\n\nGive the user a brief, natural " +
+                "wake-up summary of anything actually worth mentioning - skip anything routine or minor. " +
+                "If memory has a standing instruction for what to do with this kind of update (e.g. adding " +
+                "a new job application to a tracker automatically), follow it; otherwise just report what " +
+                "came in and let the user decide what, if anything, to do about it.]";
+            _ = ProcessTextInputAsync(prompt);
+            return;
+        }
+
         string phrase = ReadyPhrases[_random.Next(ReadyPhrases.Length)];
         StatusLog.WriteLine(wasAsleep ? $"\n[hotkey: woke up - {phrase}]" : $"\n[hotkey: {phrase}]");
         _ = SpeakLocalReplyAsync(phrase);
+    }
+
+    // See TriggerReadyAcknowledgment's own call site. Drains everything
+    // TriggerEmailAlert/TriggerCalendarReminder queued while asleep into
+    // one newline-joined block, clearing the queue in the same pass so
+    // nothing gets replayed into a later wake-up.
+    private string DrainSleepAccumulatedEvents()
+    {
+        var lines = new List<string>();
+        while (_sleepAccumulatedEvents.TryDequeue(out string? line))
+        {
+            lines.Add(line);
+        }
+
+        return string.Join("\n", lines);
     }
 
     // Triggered by AmbientFileWatcher after its own cheap Haiku gate decided
@@ -770,51 +952,72 @@ internal sealed class NovaAssistant
         _ = ProcessTextInputAsync(prompt);
     }
 
-    // Proactive inbox-watching, triggered by GmailWatcher. Not gated on
-    // _engaged (unlike the ambient file trigger above) - email/calendar are
-    // the deliberate exceptions to the sleep-state suppression, always
-    // active regardless of awake/asleep, so this only checks IsBusy/pending
-    // gates to avoid interrupting an active conversation or stepping on an
-    // unrelated authorization already in flight.
-    public void TriggerEmailAlert(string summary)
+    // Proactive inbox-watching, triggered by GmailWatcher. GmailWatcher
+    // itself still polls regardless of sleep state (that's a free Google
+    // API call, not the cost this guards) - what changes is what happens
+    // with a genuinely new item once found. Awake, this still fires a
+    // real-time alert same as before. Asleep, it's queued instead of
+    // spending a real call immediately - see _sleepAccumulatedEvents'
+    // own doc comment for why, and TriggerReadyAcknowledgment for where
+    // it actually gets delivered.
+    public void TriggerEmailAlert(string summary) => QueueOrDeliverAmbientUpdate($"New email: {summary}");
+
+    // Proactive calendar-reminder alert, triggered by CalendarWatcher - same
+    // sleep-queues-instead-of-spends reasoning as TriggerEmailAlert above.
+    public void TriggerCalendarReminder(string summary) => QueueOrDeliverAmbientUpdate($"Upcoming calendar event: {summary}");
+
+    // Shared by TriggerEmailAlert/TriggerCalendarReminder. See
+    // _pendingAmbientUpdates' own doc comment for the full reasoning -
+    // an ambient update never competes for _isBusy the way it used to;
+    // it either rides along inside whatever's already running, waits for
+    // whatever runs next, or (only once neither applies, and only past a
+    // grace period since the last task ended) gets to be its own brief
+    // standalone mention, same as before.
+    private void QueueOrDeliverAmbientUpdate(string entry)
     {
+        if (!_engaged)
+        {
+            _sleepAccumulatedEvents.Enqueue(entry);
+            return;
+        }
+
         if (_pendingAuthorization is not null || _pendingGate2Review is not null)
         {
+            return;
+        }
+
+        if (IsBusy)
+        {
+            // A task is already running - fold into it instead of
+            // competing for _isBusy or interrupting it. Picked up by the
+            // mid-round/closing-check drain points inside the round loop.
+            _pendingAmbientUpdates.Enqueue(entry);
+            return;
+        }
+
+        if (_lastTaskEndedAtUtc is { } endedAt && DateTime.UtcNow - endedAt < AmbientGraceAfterTask)
+        {
+            // Confirmed live as a real bug: firing the instant IsBusy read
+            // false meant this could land in the exact split-second gap
+            // right after a real task ended, before the user had a chance
+            // to say their actual next thing, then get cancelled
+            // mid-sentence anyway once they did. Queue it instead - the
+            // next task to start, whichever it turns out to be, picks it
+            // up via the fresh-task context-building point.
+            _pendingAmbientUpdates.Enqueue(entry);
             return;
         }
 
         // Atomic claim-if-free - see TriggerAmbientFileSuggestion's comment.
         if (Interlocked.CompareExchange(ref _isBusy, 1, 0) != 0)
         {
+            _pendingAmbientUpdates.Enqueue(entry);
             return;
         }
 
         _taskIsAmbientInitiated = true;
-        StatusLog.WriteLine($"\n[email alert: {summary}]");
-        string prompt = $"[Ambient trigger, not a user message - {summary} Mention it to the user briefly in one short sentence.]";
-        _ = ProcessTextInputAsync(prompt);
-    }
-
-    // Proactive calendar-reminder alert, triggered by CalendarWatcher - same
-    // "email/calendar are exceptions to the sleep-state suppression"
-    // reasoning as TriggerEmailAlert above, so this only checks IsBusy/
-    // pending gates too (CalendarWatcher's own eligibility check already
-    // covers the NovaSettings.CalendarWatcherEnabled toggle).
-    public void TriggerCalendarReminder(string summary)
-    {
-        if (_pendingAuthorization is not null || _pendingGate2Review is not null)
-        {
-            return;
-        }
-
-        if (Interlocked.CompareExchange(ref _isBusy, 1, 0) != 0)
-        {
-            return;
-        }
-
-        _taskIsAmbientInitiated = true;
-        StatusLog.WriteLine($"\n[calendar reminder: {summary}]");
-        string prompt = $"[Ambient trigger, not a user message - upcoming calendar event: {summary} Mention it to the user briefly in one short sentence.]";
+        StatusLog.WriteLine($"\n[ambient update: {entry}]");
+        string prompt = $"[Ambient trigger, not a user message - {entry} Mention it to the user briefly in one short sentence.]";
         _ = ProcessTextInputAsync(prompt);
     }
 
@@ -1339,6 +1542,16 @@ internal sealed class NovaAssistant
                     ? $"[Context carried over from the task you just finished: {summary}]\n\n{input}"
                     : input;
 
+                // See _pendingAmbientUpdates' own doc comment - anything
+                // that queued while genuinely idle (nothing running, still
+                // inside AmbientGraceAfterTask) rides into whatever starts
+                // next, whether this is the user's own request or another
+                // ambient trigger's own dispatch.
+                if (DrainPendingAmbientUpdates() is { } pendingAmbient)
+                {
+                    content = $"[An ambient update came in, not urgent: {pendingAmbient}]\n\n{content}";
+                }
+
                 // One cheap Haiku call, once per fresh task (see
                 // StrategyRouter's own doc comment for why this needs a
                 // real judgment call rather than search_memory's embedding
@@ -1673,6 +1886,10 @@ internal sealed class NovaAssistant
         await Task.Delay(SpeechCooldownMs);
         Volatile.Write(ref _isBusy, 0);
         Volatile.Write(ref _currentActivity, null);
+        // See AmbientGraceAfterTask's own doc comment - marks the moment
+        // an ambient update is allowed to independently claim _isBusy
+        // again, rather than the instant it goes false.
+        _lastTaskEndedAtUtc = DateTime.UtcNow;
     }
 
     // Runs one Claude turn (streamed, tools enabled), speaking any text as it
