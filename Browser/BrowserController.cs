@@ -477,7 +477,93 @@ internal sealed class BrowserController
             }
         }
 
-        return $"No dropdown labeled \"{label}\" found on the page or in any embedded frame.";
+        // GetByLabel found nothing at all - the common shape for a
+        // radio-button/toggle-pill question group (Yes/No, work
+        // authorization, relocation, etc., frequent on Ashby and similar
+        // ATSes): there's no single form control associated with the
+        // question text the way a real <label> targets one input, just a
+        // heading/legend above a set of separately-labeled options ("Yes",
+        // "No"), so GetByLabel(the question) has nothing to find. Confirmed
+        // live as a real gap: this used to mean falling back to
+        // browser_click, which structurally refuses anything that isn't a
+        // recognized navigational action - not because clicking a Yes/No
+        // answer is unsafe (it's exactly as reversible as any other form
+        // field the user reviews before submitting), just because no tool
+        // covered this specific widget shape. Same free-to-use reasoning as
+        // the rest of this method - still just answering a form question,
+        // not submitting anything.
+        string? radioGroupError = await TryRadioGroupSelectAsync(_activeBrowserPage, label, value);
+        if (radioGroupError is null)
+        {
+            return $"Selected \"{value}\" for \"{label}\" (radio-button/toggle question group).";
+        }
+
+        return $"No dropdown, combobox, or radio-button group labeled \"{label}\" found on the page or in any " +
+               $"embedded frame ({radioGroupError}).";
+    }
+
+    // See the doc comment at this method's one call site. Looks for a
+    // properly-accessible radiogroup first (role="radiogroup" with an
+    // accessible name matching the question text - what a well-built ATS
+    // form uses), then the matching individual option by its own visible
+    // text within that group. Doesn't attempt a looser page-wide fallback
+    // the way TryComboboxSelectAsync does - a bare role=Radio search with
+    // no group scoping risks clicking the wrong question's "Yes" entirely
+    // when a form has several similar-shaped questions on one page, which
+    // is worse than just reporting "couldn't find it."
+    private static async Task<string?> TryRadioGroupSelectAsync(IPage page, string label, string value)
+    {
+        try
+        {
+            ILocator group = page.GetByRole(AriaRole.Radiogroup, new PageGetByRoleOptions { Name = label, Exact = false });
+            if (await group.CountAsync() == 0)
+            {
+                return "no radiogroup found with a matching accessible name";
+            }
+
+            ILocator option = group.First.GetByRole(AriaRole.Radio, new LocatorGetByRoleOptions { Name = value, Exact = false });
+            await option.First.WaitForAsync(new LocatorWaitForOptions { Timeout = 700 });
+
+            try
+            {
+                // Bounded well below ToolExecutionTimeout on purpose -
+                // confirmed live as a real hang, not a guess: a plain click
+                // here ran the full 60 seconds three times in a row on a
+                // real Ashby form before the outer timeout finally killed
+                // it. The role=radio match itself succeeds fast (proven by
+                // WaitForAsync above resolving in well under 700ms) but the
+                // native input a lot of these component libraries build
+                // their custom-styled radio pills on top of is commonly
+                // visually hidden (zero size, opacity 0) behind the styled
+                // sibling the user actually sees - Playwright's normal
+                // click retries its own visibility/stability check
+                // indefinitely against that hidden element, since it can
+                // never pass. Fail fast here instead of tying up the whole
+                // tool call.
+                await option.First.ClickAsync(new LocatorClickOptions { Timeout = 3000 });
+            }
+            catch (TimeoutException)
+            {
+                // Same element, same match - just tell Playwright to
+                // dispatch the click without waiting for the strict
+                // visibility/stability checks that are almost certainly
+                // what's actually blocking here. Safe specifically because
+                // `option` was already confirmed, above, to be a real
+                // role=radio match by accessible name - this isn't forcing
+                // a click on something never verified to be the right
+                // element, only skipping the part of the check that a
+                // hidden-native-input-behind-a-styled-sibling pattern fails
+                // for reasons that have nothing to do with whether it's
+                // the correct control.
+                await option.First.ClickAsync(new LocatorClickOptions { Force = true, Timeout = 3000 });
+            }
+
+            return null;
+        }
+        catch (Exception ex)
+        {
+            return ex.Message.Split('\n')[0];
+        }
     }
 
     // Greenhouse and several other ATSes build their own combobox instead

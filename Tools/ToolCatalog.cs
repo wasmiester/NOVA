@@ -475,15 +475,23 @@ internal static class ToolCatalog
 
         Tool browserSelectTool = BuildTool(
             "browser_select",
-            "Chooses an option in a dropdown field on the currently selected tab (see browser_read) in the " +
-            "user's real Chrome. Free to use without asking - same reasoning as browser_fill, this is still " +
-            "just filling in form data, not clicking/submitting anything. Handles both real <select> elements " +
-            "and custom combobox widgets automatically (common on Greenhouse and similar application forms) - " +
-            "for the custom kind it types the value in and clicks the matching option from the popup that " +
+            "Chooses an option in a dropdown field, OR answers a radio-button/toggle-pill question group " +
+            "(Yes/No, work authorization, relocation, sponsorship, and similar single-choice questions common " +
+            "on Ashby, Greenhouse, and similar application forms), on the currently selected tab (see " +
+            "browser_read) in the user's real Chrome. Free to use without asking - same reasoning as " +
+            "browser_fill, this is still just filling in form data, not clicking/submitting anything, " +
+            "regardless of which of these three shapes the actual widget turns out to be - this is the right " +
+            "tool for a Yes/No or multiple-choice question, not browser_click, which is deliberately scoped " +
+            "to navigational actions only and will refuse anything shaped like an answer to a question. " +
+            "Handles real <select> elements, custom combobox widgets, and radio-button groups automatically - " +
+            "for a combobox it types the value in and clicks the matching option from the popup that " +
             "appears, since typed text alone doesn't commit a value on those (confirmed the hard way: it can " +
-            "visually look filled in a page read and still not actually be selected). No need to try " +
-            "browser_fill as a workaround for a dropdown that rejects browser_select - this already tries " +
-            "both interaction styles itself. Same label-vs-ref rule as browser_fill applies: when the label " +
+            "visually look filled in a page read and still not actually be selected); for a radio-button " +
+            "group it finds the group by the question's own accessible name and clicks the matching option " +
+            "within it specifically (not a bare page-wide click, to avoid hitting the wrong question's " +
+            "identically-labeled option on a form with several similar questions). No need to try " +
+            "browser_fill or browser_click as a workaround for a field that rejects browser_select - this " +
+            "already tries all three interaction styles itself. Same label-vs-ref rule as browser_fill applies: when the label " +
             "repeats on the page (e.g. a \"Degree\" dropdown on each of several education entries), pass " +
             "field_ref from browser_read's \"Fillable fields\" list to target the exact one; label alone " +
             "always hits the first match. IMPORTANT: value must be the option's real text, copied exactly - " +
@@ -560,7 +568,10 @@ internal static class ToolCatalog
             "regardless of how it's asked for. Requires user authorization even for an allowed click, since " +
             "it's still a state change, not pure reading. Never call this hoping to sneak past the scope " +
             "check - if the user wants something submitted, posted, purchased, or otherwise sent, tell them " +
-            "to click it themselves, the same as always.",
+            "to click it themselves, the same as always. A Yes/No or multiple-choice question on a form " +
+            "(work authorization, sponsorship, relocation, etc.) is NOT what this tool is for, even though " +
+            "picking an answer technically involves a click on some sites - use browser_select instead, " +
+            "which handles that shape (and dropdowns, and comboboxes) directly.",
             new
             {
                 type = "object",
