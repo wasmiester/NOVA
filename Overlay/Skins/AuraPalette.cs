@@ -12,13 +12,20 @@ internal sealed record AuraPalette(Color Ink, Color InkMute, Color[] GroundStops
     public static readonly AuraPalette Light = new(
         Ink: Color.FromRgb(44, 38, 69),
         InkMute: Color.FromRgb(125, 117, 153),
+        // Confirmed live: the original stops read as near-white (each one
+        // sat within a few points of 0xff on every channel), so the
+        // translucent white Glass/GlassHi fills the components themselves
+        // use had almost nothing to contrast against - everything blended
+        // into one flat pale wash. Same pink-to-blue progression, same
+        // gradient angle, just genuinely saturated pastels instead of
+        // white with a tint.
         GroundStops:
         [
-            Color.FromRgb(0xff, 0xf5, 0xfb),
-            Color.FromRgb(0xfd, 0xee, 0xfb),
-            Color.FromRgb(0xf1, 0xee, 0xff),
-            Color.FromRgb(0xea, 0xf3, 0xff),
-            Color.FromRgb(0xf7, 0xfb, 0xff),
+            Color.FromRgb(0xff, 0xd2, 0xea),
+            Color.FromRgb(0xfa, 0xc2, 0xea),
+            Color.FromRgb(0xe0, 0xcf, 0xfa),
+            Color.FromRgb(0xc6, 0xdf, 0xfc),
+            Color.FromRgb(0xd9, 0xea, 0xfc),
         ],
         Glass: Color.FromArgb(158, 255, 255, 255),
         GlassHi: Color.FromArgb(217, 255, 255, 255),
