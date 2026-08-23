@@ -20,7 +20,7 @@ Nova runs as a small floating overlay rather than a console window, with three i
 
 | ARC | WEB | AURA |
 |---|---|---|
-| ![ARC skin](docs/screenshots/arc.png) | ![WEB skin](docs/screenshots/web.png) | ![AURA skin](docs/screenshots/aura.png) |
+| ![ARC skin](docs/arc.png) | ![WEB skin](docs/web.png) | ![AURA skin](docs/aura.png) |
 | Hologram-globe HUD, cyan theme | Retro pixel-art tracker | Soft pastel companion |
 
 ## What's next
