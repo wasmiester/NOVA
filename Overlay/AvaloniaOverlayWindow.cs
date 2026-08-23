@@ -47,6 +47,16 @@ internal sealed class AvaloniaOverlayWindow : Window
     private double _lastHeight;
     private bool _sizeInitialized;
 
+    // The physical-pixel screen X of the window's right edge - the anchor
+    // maximize-mode's width change grows/shrinks around (see PushState's
+    // own width-adjustment), same "remember where it should snap back to"
+    // idea as _restingTop above, just for the other axis. Updated on
+    // startup/state-load and again after every deliberate drag, so a
+    // moved window still maximizes toward its own current position
+    // instead of the original startup corner.
+    private double _anchoredRightPhysical;
+    private double _scaling = 1.0;
+
     // A mode-switch click that lands while Nova is genuinely busy can't
     // switch immediately - remembered here and applied on the next tick
     // once she's free.
@@ -90,9 +100,9 @@ internal sealed class AvaloniaOverlayWindow : Window
         // to the correct physical-pixel one.
         Screen? primary = Screens.Primary;
         PixelRect workArea = primary?.WorkingArea ?? new PixelRect(0, 0, 1920, 1080);
-        double scaling = primary?.Scaling ?? 1.0;
-        int marginPhysical = (int)(40 * scaling);
-        int panelWidthPhysical = (int)(OverlayLayout.PanelWidth * scaling);
+        _scaling = primary?.Scaling ?? 1.0;
+        int marginPhysical = (int)(40 * _scaling);
+        int panelWidthPhysical = (int)(OverlayLayout.PanelWidth * _scaling);
         Position = new PixelPoint(workArea.Right - panelWidthPhysical - marginPhysical, workArea.Y + marginPhysical);
 
         bool stateLoaded = TryLoadState(out PixelPoint savedPosition, out int savedIndex, out bool savedArcAlt, out bool savedAuraAlt);
@@ -102,6 +112,7 @@ internal sealed class AvaloniaOverlayWindow : Window
         }
 
         _restingTop = Position.Y;
+        _anchoredRightPhysical = Position.X + (int)(Width * _scaling);
 
         SizeChanged += (_, e) => OnSizeChanged(e.NewSize);
 
@@ -276,6 +287,22 @@ internal sealed class AvaloniaOverlayWindow : Window
             GoogleConnectError: _assistant.GoogleConnectError);
         _skins[_activeIndex].ApplyState(state);
 
+        // See IOverlaySkin.IsCollapsed's own doc comment - the floor only
+        // makes sense while the full panel is actually showing.
+        MinHeight = _skins[_activeIndex].IsCollapsed ? 0 : OverlayLayout.PanelMinHeight;
+
+        // See IOverlaySkin.IsMaximized's own doc comment. Direct Width
+        // assignment, not SizeToContent - grows/shrinks around
+        // _anchoredRightPhysical (the right edge, not the left) so the
+        // panel widens toward the screen's center instead of running off
+        // whichever edge it's docked near.
+        double targetWidth = _skins[_activeIndex].IsMaximized ? OverlayLayout.MaximizedPanelWidth : OverlayLayout.PanelWidth;
+        if (Math.Abs(Width - targetWidth) > 0.5)
+        {
+            Width = targetWidth;
+            Position = Position.WithX((int)(_anchoredRightPhysical - targetWidth * _scaling));
+        }
+
         if (state.PendingGate2Prompt is { } gate2Prompt)
         {
             _popup.Show(gate2Prompt);
@@ -310,8 +337,18 @@ internal sealed class AvaloniaOverlayWindow : Window
 
     private void CycleSkin()
     {
+        // Confirmed live as a real gap: each skin's collapsed/maximized
+        // state was entirely private, so cycling away from a maximized (or
+        // collapsed) skin and back silently reset to the plain minimized
+        // panel instead of carrying the resting state the user actually
+        // left it in.
+        bool wasCollapsed = _skins[_activeIndex].IsCollapsed;
+        bool wasMaximized = _skins[_activeIndex].IsMaximized;
+
         _skins[_activeIndex].Deactivate();
         _activeIndex = (_activeIndex + 1) % _skins.Length;
+        _skins[_activeIndex].SetMaximized(wasMaximized);
+        _skins[_activeIndex].SetCollapsed(wasCollapsed);
         _contentHost.Children.RemoveAt(0);
         _contentHost.Children.Insert(0, _skins[_activeIndex].Root);
         _popup.ApplyStyle(_skins[_activeIndex].PopupStyle);
@@ -354,6 +391,7 @@ internal sealed class AvaloniaOverlayWindow : Window
 
         BeginMoveDrag(e);
         _restingTop = Position.Y; // a deliberate drag always becomes the new resting spot
+        _anchoredRightPhysical = Position.X + (int)(Width * _scaling);
         SaveState();
     }
 

@@ -60,6 +60,17 @@ internal sealed class ArcSkin : IOverlaySkin
     private readonly ActivityLogPanel _activityLog;
     private readonly TextBlock _chromeChip;
     private readonly TextBlock _gmailChip;
+    private readonly StackPanel _body;
+    private readonly TextBlock _activityLabel;
+    private readonly Border _activityLogBox;
+    private readonly Border _transcriptBox;
+    private readonly TextBlock _conversationLabel;
+    private readonly Grid _typeRow;
+    private readonly Button _pill;
+    private readonly Border _pillDot;
+    private readonly DropShadowEffect _pillDotGlow;
+    private readonly SolidColorBrush _pillDotBrush;
+    private readonly TextBlock _pillText;
     private OverlaySkinActions? _actions;
     private ActivationMode _mode = ActivationMode.Prompted;
     private bool _engaged = true;
@@ -95,24 +106,24 @@ internal sealed class ArcSkin : IOverlaySkin
         var closeButton = MakeChromeButton("✕");
         closeButton.Click += (_, _) => _actions?.Close();
 
-        _transcript = new TranscriptPanel(BuildTranscriptRow, width: 220, thumbColor: Color.FromArgb(204, GoldAccent.R, GoldAccent.G, GoldAccent.B));
-        // Shorter than the transcript (100 vs. its default 220) - the panel
-        // width is fixed (see OverlayLayout.PanelWidth's own doc comment),
-        // so this stacks above the transcript rather than sitting beside
-        // it, and doesn't need to compete for the same vertical space.
-        _activityLog = new ActivityLogPanel(BuildActivityRow, width: 220, thumbColor: Color.FromArgb(204, GoldAccent.R, GoldAccent.G, GoldAccent.B), height: 100);
+        // Widths/heights match the source design mockup's own .arc-log/
+        // .arc-transcript exactly - see OverlayLayout.MaximizedPanelWidth's
+        // own doc comment for the full ratio/gap reasoning.
+        _transcript = new TranscriptPanel(BuildTranscriptRow, width: OverlayLayout.ConversationColumnWidth, thumbColor: Color.FromArgb(204, GoldAccent.R, GoldAccent.G, GoldAccent.B), height: OverlayLayout.TranscriptHeight);
+        _activityLog = new ActivityLogPanel(BuildActivityRow, width: OverlayLayout.ActivityColumnWidth, thumbColor: Color.FromArgb(204, GoldAccent.R, GoldAccent.G, GoldAccent.B), height: OverlayLayout.ActivityLogHeight);
         _maximizeButton = MakeChromeButton("☰");
-        _maximizeButton.Click += (_, _) =>
-        {
-            bool expanded = !_transcript.IsVisible;
-            _transcript.IsVisible = expanded;
-            _activityLog.IsVisible = expanded;
-        };
+        // A single-line "minimize" glyph, distinct from the pill's own
+        // down-chevron - sits right next to maximize since collapse/expand
+        // is the same axis of control (how much of the panel shows), just
+        // one more step past minimized.
+        var collapseButton = MakeChromeButton("─");
+        collapseButton.Click += (_, _) => SetCollapsed(true);
 
         var headerButtons = new StackPanel { Orientation = Orientation.Horizontal };
         headerButtons.Children.Add(_themeButton);
         headerButtons.Children.Add(_sleepButton);
         headerButtons.Children.Add(_maximizeButton);
+        headerButtons.Children.Add(collapseButton);
         headerButtons.Children.Add(cycleButton);
         headerButtons.Children.Add(closeButton);
 
@@ -200,25 +211,21 @@ internal sealed class ArcSkin : IOverlaySkin
         statusBar.Children.Add(new Border { Height = 1, Background = _hairBrush, Margin = new Thickness(0, 0, 0, 10), HorizontalAlignment = HorizontalAlignment.Stretch });
         statusBar.Children.Add(chipsRow);
 
-        var stack = new StackPanel { Margin = new Thickness(18) };
-        stack.Children.Add(header);
-        stack.Children.Add(_face);
-        stack.Children.Add(stateLabelBox);
-        stack.Children.Add(_subLabel);
-        stack.Children.Add(_progressBar);
-        stack.Children.Add(_modeButton);
+        _body = new StackPanel { Margin = new Thickness(18) };
+        _body.Children.Add(header);
+        _body.Children.Add(_face);
+        _body.Children.Add(stateLabelBox);
+        _body.Children.Add(_subLabel);
+        _body.Children.Add(_progressBar);
+        _body.Children.Add(_modeButton);
 
         // Activity feed above the transcript, both revealed together by
         // the same maximize toggle - see _maximizeButton's click handler
         // above. Labels match TranscriptScrollBarStyle's own small-caps
         // convention (see _arc-log-label in the design mockup this is
         // built from).
-        var activityLabel = new TextBlock { Text = "ACTIVITY", Foreground = _textLoBrush, FontFamily = new FontFamily("Consolas"), FontSize = 11, Margin = new Thickness(0, 10, 0, 4) };
-        var conversationLabel = new TextBlock { Text = "CONVERSATION", Foreground = _textLoBrush, FontFamily = new FontFamily("Consolas"), FontSize = 11, Margin = new Thickness(0, 10, 0, 4) };
-        stack.Children.Add(activityLabel);
-        stack.Children.Add(_activityLog.Root);
-        stack.Children.Add(conversationLabel);
-        stack.Children.Add(_transcript.Root);
+        _activityLabel = new TextBlock { Text = "ACTIVITY", Foreground = _textLoBrush, FontFamily = new FontFamily("Consolas"), FontSize = 11, Margin = new Thickness(0, 10, 0, 4), IsVisible = false };
+        _conversationLabel = new TextBlock { Text = "CONVERSATION", Foreground = _textLoBrush, FontFamily = new FontFamily("Consolas"), FontSize = 11, Margin = new Thickness(0, 10, 0, 4), IsVisible = false };
 
         var typeInput = new TextBox
         {
@@ -243,18 +250,112 @@ internal sealed class ArcSkin : IOverlaySkin
             BorderThickness = new Thickness(1),
             Padding = new Thickness(12, 0, 12, 0),
             Cursor = new Cursor(StandardCursorType.Hand),
+            // Confirmed live: at the narrower ~220px column width the
+            // side-by-side maximize layout gives it, the Grid's arrange
+            // pass was shrinking this Auto column below its own natural
+            // size instead of letting the row simply run wider than the
+            // column - a hard floor is the reliable fix regardless of the
+            // exact arrange-time math.
+            MinWidth = 56,
         };
         FlatButtonStyle.Apply(sendButton, cornerRadius: 4);
         TypeToTalkInput.WireUp(typeInput, sendButton, text => _actions?.SendTypedText(text));
-        var typeRow = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto"), Margin = new Thickness(0, 8, 0, 0) };
+        _typeRow = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto"), Margin = new Thickness(0, 8, 0, 0), IsVisible = false };
         Grid.SetColumn(typeInput, 0);
         Grid.SetColumn(sendButton, 1);
         typeInput.Margin = new Thickness(0, 0, 6, 0);
-        typeRow.Children.Add(typeInput);
-        typeRow.Children.Add(sendButton);
-        stack.Children.Add(typeRow);
+        _typeRow.Children.Add(typeInput);
+        _typeRow.Children.Add(sendButton);
 
-        stack.Children.Add(statusBar);
+        // Side by side, not stacked - see OverlayLayout.MaximizedPanelWidth's
+        // own doc comment for the exact width math this assumes. Each
+        // panel gets the mockup's own thin hairline frame (.arc-log/
+        // .arc-transcript) - confirmed live as a real gap: this was never
+        // actually carried over into the real implementation, so both
+        // areas rendered as bare content floating with no box around them.
+        _activityLogBox = new Border { BorderBrush = _hairBrush, BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(6), Padding = new Thickness(0, 8, 0, 8), Child = _activityLog.Root, IsVisible = false };
+        _transcriptBox = new Border { BorderBrush = _hairBrush, BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(6), Padding = new Thickness(8), Child = _transcript.Root, IsVisible = false };
+        var activityColumn = new StackPanel();
+        activityColumn.Children.Add(_activityLabel);
+        activityColumn.Children.Add(_activityLogBox);
+        var conversationColumn = new StackPanel();
+        conversationColumn.Children.Add(_conversationLabel);
+        conversationColumn.Children.Add(_transcriptBox);
+        conversationColumn.Children.Add(_typeRow);
+        // Fixed pixel columns, not star-weighted - the panel's own overall
+        // width is already fixed (OverlayLayout.MaximizedPanelWidth), and
+        // these match the two panels' own explicit widths above exactly,
+        // so there's nothing left for "*" to actually apportion.
+        var splitRow = new Grid { ColumnDefinitions = new ColumnDefinitions($"{OverlayLayout.ActivityColumnWidth},{OverlayLayout.ColumnGap},{OverlayLayout.ConversationColumnWidth}") };
+        Grid.SetColumn(activityColumn, 0);
+        Grid.SetColumn(conversationColumn, 2);
+        splitRow.Children.Add(activityColumn);
+        splitRow.Children.Add(conversationColumn);
+        _body.Children.Add(splitRow);
+
+        _maximizeButton.Click += (_, _) => SetMaximized(!_transcript.IsVisible);
+
+        _body.Children.Add(statusBar);
+
+        // The collapsed resting state - a slim pill sitting in front of the
+        // real panel above, not a fourth invented look (see the design
+        // mockup this is built from: click the bar and it expands directly
+        // into the real header/avatar/state, never a separate preview).
+        // Small dot instead of a second ArcFace instance - a live-animated
+        // duplicate of the ~200px particle avatar would double its render/
+        // timer cost for a decorative collapsed-state indicator; a plain
+        // glow dot reads the same states (color/opacity carries them, per
+        // the mockup's own reasoning) far more cheaply.
+        _pillDotBrush = new SolidColorBrush(GoldAccent);
+        _pillDotGlow = new DropShadowEffect { Color = GoldAccent, BlurRadius = 10, OffsetX = 0, OffsetY = 0, Opacity = 0.6 };
+        _pillDot = new Border
+        {
+            Width = 26,
+            Height = 26,
+            CornerRadius = new CornerRadius(13),
+            Background = _pillDotBrush,
+            Effect = _pillDotGlow,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        _pillText = new TextBlock
+        {
+            Text = "LISTENING",
+            Foreground = _accentBrush,
+            FontFamily = new FontFamily("Consolas"),
+            FontSize = 12,
+            Margin = new Thickness(12, 0, 12, 0),
+            VerticalAlignment = VerticalAlignment.Center,
+            TextTrimming = TextTrimming.CharacterEllipsis,
+        };
+        var pillChevron = new TextBlock { Text = "▾", Foreground = _textLoBrush, FontSize = 12, VerticalAlignment = VerticalAlignment.Center };
+        var pillInner = new Grid { ColumnDefinitions = new ColumnDefinitions("Auto,*,Auto") };
+        Grid.SetColumn(_pillDot, 0);
+        Grid.SetColumn(_pillText, 1);
+        Grid.SetColumn(pillChevron, 2);
+        pillInner.Children.Add(_pillDot);
+        pillInner.Children.Add(_pillText);
+        pillInner.Children.Add(pillChevron);
+        _pill = new Button
+        {
+            Background = Brushes.Transparent,
+            BorderThickness = new Thickness(0),
+            Padding = new Thickness(18, 0, 18, 0),
+            Height = 60,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            Cursor = new Cursor(StandardCursorType.Hand),
+            Content = pillInner,
+            IsVisible = false,
+        };
+        FlatButtonStyle.Apply(_pill, cornerRadius: 28, stretchContent: true);
+        _pill.Click += (_, _) => SetCollapsed(false);
+
+        // Grid, not a second Border - _root already supplies the shared
+        // background/border/corner-radius/glow for both states, this just
+        // decides which content fills it. Both children can occupy the
+        // same implicit cell since only one is ever IsVisible at a time.
+        var rootContent = new Grid();
+        rootContent.Children.Add(_body);
+        rootContent.Children.Add(_pill);
 
         _panelGlow = new DropShadowEffect { Color = _accentBrush.Color, BlurRadius = 40, OffsetX = 0, OffsetY = 0, Opacity = 0.25 };
         _root = new Border
@@ -271,7 +372,7 @@ internal sealed class ArcSkin : IOverlaySkin
             // in favor of matching AURA's plain rounded-rectangle corners
             // exactly (same CornerRadius value).
             CornerRadius = new CornerRadius(28),
-            Child = stack,
+            Child = rootContent,
             // box-shadow: ... 0 0 60px rgba(accent,0.1) from the mockup -
             // the soft accent-tinted glow around the whole panel.
             Effect = _panelGlow,
@@ -298,14 +399,29 @@ internal sealed class ArcSkin : IOverlaySkin
         // searching memory), the state label shows *that* instead of the
         // generic LISTENING - the same text already printed to the
         // console, so the overlay stops looking idle during a long task.
-        _stateLabel.Text = state.Asleep
+        // Working is also its own distinct pill-dot tint below (between
+        // idle and speaking) - not just a text change, same as the
+        // maximize-mode design mockup's tint-bar exploration.
+        bool working = !state.Asleep && !state.IsSpeaking && state.CurrentActivity is not null;
+        string stateText = state.Asleep
             ? "STANDBY"
             : state.IsSpeaking
                 ? "SPEAKING"
-                : state.CurrentActivity is { } activity
-                    ? TruncateActivity(activity).ToUpperInvariant()
+                : working
+                    ? TruncateActivity(state.CurrentActivity!).ToUpperInvariant()
                     : "LISTENING";
+        _stateLabel.Text = stateText;
         _subLabel.Text = state.Asleep ? "CTRL+ALT+SPACE TO WAKE" : "JUST START TALKING";
+
+        // The collapsed pill mirrors the same text live, plus its own dot
+        // opacity carrying the same 4 states the mockup's tint-bar demo
+        // cycled through (listening/speaking/working/asleep) - color/glow
+        // alone should read as "what's happening" without needing to
+        // expand back to the full panel.
+        _pillText.Text = stateText;
+        _pillDotBrush.Color = _accentBrush.Color;
+        _pillDotGlow.Opacity = state.Asleep ? 0.15 : state.IsSpeaking ? 0.85 : working ? 0.6 : 0.45;
+        _pillDot.Opacity = state.Asleep ? 0.5 : 1.0;
         _stateLabel.Opacity = state.Asleep ? 0.55 : 1.0;
         // A task in progress swaps the idle hint for the indeterminate bar
         // instead of showing both - "JUST START TALKING" doesn't apply
@@ -412,10 +528,63 @@ internal sealed class ArcSkin : IOverlaySkin
         _faceGlow.Color = accent;
         _hairBrush.Color = _goldTheme ? GoldHair : CyanHair;
         _accentBgBrush.Color = Color.FromArgb(31, accent.R, accent.G, accent.B);
+        _pillDotGlow.Color = accent;
         _transcript.SetThumbColor(Color.FromArgb(204, accent.R, accent.G, accent.B));
         _activityLog.SetThumbColor(Color.FromArgb(204, accent.R, accent.G, accent.B));
         _actions?.ThemeChanged();
     }
+
+    // Swaps between the full panel and the slim resting pill - see the
+    // pill's own construction-site comment. Preserves whatever the
+    // transcript/activity-log toggle was last set to (untouched here), so
+    // re-expanding returns to maximize mode if that's where it was left.
+    // Public (not just the button's own click handler) so OverlayWindow can
+    // carry this state across a skin cycle - see its own CycleSkin comment.
+    public void SetCollapsed(bool collapsed)
+    {
+        // Confirmed live as a real bug: collapsing while maximized left
+        // _transcript/_activityLog still marked visible and _root.Width at
+        // MaximizedPanelWidth, so the pill rendered at the wide maximized
+        // width instead of the normal resting one. Un-maximizing first
+        // resets both width and content visibility together, rather than
+        // just patching the width and leaving stale wide content behind
+        // the pill for whenever it next expands.
+        if (collapsed)
+        {
+            SetMaximized(false);
+        }
+
+        _body.IsVisible = !collapsed;
+        _pill.IsVisible = collapsed;
+    }
+
+    // Widens both this panel's own root and (via OverlayWindow's own
+    // IsMaximized polling) the window together, in lockstep - explicit
+    // assignment, not SizeToContent.Width, which previously desynced the
+    // window's outer bounds from what actually rendered when content width
+    // changed at runtime (see AvaloniaOverlayWindow's own constructor
+    // comment on Width). Public for the same cross-skin-cycle reason as
+    // SetCollapsed above.
+    public void SetMaximized(bool maximized)
+    {
+        _transcript.IsVisible = maximized;
+        _activityLog.IsVisible = maximized;
+        _activityLabel.IsVisible = maximized;
+        _conversationLabel.IsVisible = maximized;
+        _typeRow.IsVisible = maximized;
+        // The wrapping frame Border doesn't auto-collapse just because its
+        // (now zero-height) child does - left always-visible, it would
+        // still paint its own empty bordered box while minimized.
+        _activityLogBox.IsVisible = maximized;
+        _transcriptBox.IsVisible = maximized;
+        _root.Width = maximized ? OverlayLayout.MaximizedPanelWidth : OverlayLayout.PanelWidth;
+    }
+
+    // _pill.IsVisible is already the single source of truth for this -
+    // no separate bool to fall out of sync with it.
+    public bool IsCollapsed => _pill.IsVisible;
+
+    public bool IsMaximized => _transcript.IsVisible;
 
     public void AttachActions(OverlaySkinActions actions) => _actions = actions;
 

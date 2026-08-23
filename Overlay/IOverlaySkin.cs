@@ -36,6 +36,39 @@ internal interface IOverlaySkin
     // construction, before the skin is ever shown.
     void AttachActions(OverlaySkinActions actions);
 
+    // True while this skin has collapsed itself down to the slim resting
+    // pill. Read once per tick (same cadence as ApplyState) so
+    // OverlayWindow can drop its own Window.MinHeight floor while
+    // collapsed - that floor exists to keep the full panel from ever
+    // looking cramped, but applied unconditionally it also stopped the
+    // window from ever actually shrinking to the pill's real height,
+    // confirmed live: the pill rendered floating inside a window still
+    // sized for the full panel instead of collapsing around it.
+    bool IsCollapsed { get; }
+
+    // True while this skin's activity feed and conversation transcript are
+    // both showing (the maximize toggle) - read once per tick, same as
+    // IsCollapsed, so OverlayWindow can widen itself to
+    // OverlayLayout.MaximizedPanelWidth for the side-by-side layout and
+    // shrink back to PanelWidth otherwise. The skin's own root Width
+    // changes in lockstep, in its own maximize-button click handler - see
+    // that handler's own comment for why this isn't done through
+    // SizeToContent instead.
+    bool IsMaximized { get; }
+
+    // Imposes collapsed/maximized state from outside, rather than only
+    // ever toggling in response to this skin's own button click - lets
+    // OverlayWindow carry a resting/collapsed/maximized state across a
+    // skin cycle (see its own CycleSkin) instead of every skin quietly
+    // resetting to its own independent default the moment it becomes
+    // active. Confirmed live as a real gap: cycling skins while maximized
+    // (or collapsed) used to silently drop back to the plain minimized
+    // panel, since each skin's IsVisible flags were entirely private state
+    // nothing else ever touched.
+    void SetCollapsed(bool collapsed);
+
+    void SetMaximized(bool maximized);
+
     // Per-skin visual parameters for the shared Gate 2 confirmation popup
     // (see ConfirmPopup/ConfirmPopupStyle). Read on skin cycle and on this
     // skin's own theme-toggle callback - a plain getter (not cached) so a
