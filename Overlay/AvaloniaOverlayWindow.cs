@@ -327,12 +327,20 @@ internal sealed class AvaloniaOverlayWindow : Window
         }
 
         // While either popup is up (Gate 2 review or a Google-credentials
-        // prompt), nothing behind it (including a window drag) should be
-        // reachable until it's explicitly resolved. Each popup's own
-        // buttons/text fields still work regardless - this only ever
-        // suppresses the drag-initiation below, it doesn't gate their
-        // Click/text-input events.
-        if (_popup.IsShown || _credentialsPopup.IsShown)
+        // prompt), its card/buttons/text fields are still the only thing
+        // meant to be reachable - but a click that lands on the popup's
+        // own backdrop (its empty surrounding area, not the card) can't
+        // possibly have been aimed at a control there, so it's safe to
+        // let that reposition the whole window, popup included. Confirmed
+        // live as a real bug: any click anywhere while a popup was shown
+        // used to block dragging unconditionally, making the window
+        // immovable for as long as either popup stayed up - including the
+        // credentials prompt, which can land somewhere inconvenient with
+        // no way to move it out of the way.
+        bool clickedPopupBackdrop = (_popup.IsShown && ReferenceEquals(e.Source, _popup.Backdrop))
+            || (_credentialsPopup.IsShown && ReferenceEquals(e.Source, _credentialsPopup.Backdrop));
+
+        if ((_popup.IsShown || _credentialsPopup.IsShown) && !clickedPopupBackdrop)
         {
             return;
         }

@@ -39,6 +39,12 @@ internal sealed class ConfirmPopup
 
     public bool IsShown => _root.IsVisible;
 
+    // Exposed so AvaloniaOverlayWindow's drag handler can tell "clicked the
+    // popup's own empty backdrop" (safe to drag the window - see its own
+    // comment) apart from "clicked the card/a control on it" (let the
+    // popup handle it, don't drag).
+    public Control Backdrop => _backdrop;
+
     public ConfirmPopup(ConfirmPopupStyle style, Action<bool> onDecision)
     {
         _style = style;
