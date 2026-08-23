@@ -23,7 +23,13 @@ internal static class FlatButtonStyle
     // 3px 3px 0 var(--edge-lo), inset 0 0 0 2px rgba(255,255,255,.1) - a
     // hard offset copy plus a faint inner highlight, which a plain
     // BorderBrush can't reproduce. Left null for ARC/AURA's flat look.
-    public static void Apply(Button button, double cornerRadius = 4, Color? pixelShadowColor = null)
+    // stretchContent opts the inner ContentPresenter into filling the
+    // button's full width instead of centering on its content's own
+    // natural size - every existing caller is a small icon/label button
+    // where centering is correct, but the collapsed-state pill button
+    // needs its middle text column to actually flex/ellipsis against the
+    // panel's fixed width, which a centered presenter can't do.
+    public static void Apply(Button button, double cornerRadius = 4, Color? pixelShadowColor = null, bool stretchContent = false)
     {
         var overlay = new Border
         {
@@ -77,7 +83,7 @@ internal static class FlatButtonStyle
 
             var presenter = new ContentPresenter
             {
-                HorizontalAlignment = HorizontalAlignment.Center,
+                HorizontalAlignment = stretchContent ? HorizontalAlignment.Stretch : HorizontalAlignment.Center,
                 VerticalAlignment = VerticalAlignment.Center,
             };
             presenter.Bind(ContentPresenter.ContentProperty, b.GetObservable(ContentControl.ContentProperty));
