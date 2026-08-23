@@ -41,16 +41,41 @@ internal sealed class AudioCapturePipeline : IDisposable
     // mic, but real AEC is never perfect - some residual can still cross this,
     // so barge-in needs a louder, more deliberate sound to fire in the first
     // place, and (see BargeInSustainMs below) needs to actually last a moment.
-    private const float BargeInRmsThreshold = 0.0065f; // another ~20% more sensitive (0.0081 -> 0.0065) -
-                                                         // still relies on BargeInSustainMs to filter residual-echo spikes
+    // Restored to 0.0081 (was dropped to 0.0065 in an earlier general
+    // sensitivity pass, in lockstep with SpeechRmsThreshold above rather
+    // than for its own reason) - confirmed live: Nova was barging in on her
+    // own residual echo, worse with system output volume turned up, since
+    // WASAPI loopback captures the actual post-volume-scaled signal and a
+    // louder signal leaves proportionally more residual after AEC's linear
+    // cancellation (real speakers distort more at higher volume, which a
+    // linear adaptive filter can't fully model). A threshold *below*
+    // SpeechRmsThreshold meant residual echo had an easier bar to clear
+    // here than genuine distant speech has for normal pickup - backwards
+    // from this constant's own stated purpose above. Restoring it above
+    // SpeechRmsThreshold, not just relying on BargeInSustainMs, targets the
+    // actual dimension the volume-dependence points at (amplitude), where
+    // sustain duration alone only helps if the residual has natural gaps -
+    // untrue for a continuous leak of Nova's own continuous speech.
+    private const float BargeInRmsThreshold = 0.0081f;
     // Genuine interruptions are sustained speech; residual echo that leaks past
     // imperfect AEC tends to be brief, syllable-length spikes. Requiring the
     // elevated volume to hold for this long before actually cutting her off
     // filters those out without needing AEC to be perfect - this is the more
     // load-bearing fix of the two, since it doesn't depend on tuning the AEC
     // delay estimate exactly right.
-    private const int BargeInSustainMs = 90; // lowered from 120 - both thresholds dropped again above, so this
-                                               // needed to shrink too or a genuine interrupt would still feel slow to register
+    // Raised from 90ms - confirmed live: Nova was barging in on her own
+    // voice (residual self-echo leaking past AEC, see BargeInRmsThreshold
+    // above for the amplitude side of this same incident), cutting herself
+    // off mid-reply and producing disconnected transcribed fragments that
+    // read like they'd come from somewhere else entirely. A longer required
+    // hold is a second, independent lever on the same problem - it only
+    // helps to the extent the residual leak has real gaps in it (e.g.
+    // between her words/phrases) rather than being one continuous elevated
+    // stretch for as long as she's talking; the amplitude fix above is the
+    // more direct match for what actually seems to be happening (worse at
+    // higher system output volume), so treat this as a complementary
+    // safety margin, not the primary fix.
+    private const int BargeInSustainMs = 220;
     // A sharp, brief transient (a keyboard click, a knock) can cross
     // SpeechRmsThreshold just as easily as real speech, but a fresh
     // utterance start had no sustain check at all - unlike the barge-in
@@ -265,6 +290,21 @@ internal sealed class AudioCapturePipeline : IDisposable
 
                 _freshUtteranceCandidateSince = null;
                 _capturingInterjection = _assistant.IsBusy;
+                // Confirmed live: a fresh utterance landing right after
+                // Nova finishes one sentence of a multi-sentence reply
+                // (a real gap - IsSpeaking goes false between sentences,
+                // see RunAssistantTurnAsync's per-sentence-boundary
+                // SpeakAndWaitAsync awaits) got classified as a fresh
+                // utterance and stole/cancelled the still-in-flight task
+                // instead of continuing gracefully as an interjection -
+                // meaning IsBusy read false at this exact moment despite
+                // the round loop apparently still being mid-response,
+                // which contradicts how _isBusy is supposed to stay
+                // claimed for a task's entire duration. Logged here
+                // instead of guessed at again - the next occurrence should
+                // make the actual mechanism visible instead of needing
+                // another round of static analysis.
+                StatusLog.WriteLine($"[fresh-utterance classification: IsBusy={_capturingInterjection}, IsSpeaking={_assistant.IsSpeaking}]");
 
                 // Pre-roll only makes sense seeding a *fresh* utterance
                 // while genuinely idle - while she's mid-task, recent quiet
@@ -306,15 +346,26 @@ internal sealed class AudioCapturePipeline : IDisposable
 
         if (!_userIsSpeaking)
         {
-            // Same reasoning as above - only worth keeping as pre-roll for
-            // a future fresh utterance while genuinely idle.
-            if (!_assistant.IsBusy)
+            // Confirmed live: gating this on !IsBusy meant the buffer got
+            // zero new audio for the entire duration of a task, including
+            // while Nova was speaking her final reply - so the exact
+            // utterance most likely to follow right on her heels (the user
+            // responding as soon as she stops, the normal case) was also
+            // the one most starved of the real lead-in PreRollChunks exists
+            // to provide, reproducing the "first word or two garbled"
+            // problem that constant was raised to fix in the first place.
+            // Safe to accumulate regardless of IsBusy: this branch is only
+            // reached when rms is already below the active threshold, so
+            // whatever's here (genuine silence, or residual after AEC
+            // cancels her own voice) already reads as "quiet" to the same
+            // gate real silence does - nothing louder ever lands here. Only
+            // *using* pre-roll still stays scoped to a genuinely fresh,
+            // non-interjection utterance (see _capturingInterjection below);
+            // this only changes when it's collected, not when it's spent.
+            _preRollBuffer.Enqueue(chunk);
+            while (_preRollBuffer.Count > PreRollChunks)
             {
-                _preRollBuffer.Enqueue(chunk);
-                while (_preRollBuffer.Count > PreRollChunks)
-                {
-                    _preRollBuffer.Dequeue();
-                }
+                _preRollBuffer.Dequeue();
             }
 
             return;
