@@ -23,7 +23,6 @@ namespace Nova;
 // audio as a barge-in (via Interrupt()).
 internal sealed class NovaAssistant
 {
-    private const int MaxToolRounds = 6; // safety cap against a runaway tool-call loop
     private const int SpeechCooldownMs = 300;
 
     private readonly AnthropicClient _client;
@@ -203,6 +202,12 @@ internal sealed class NovaAssistant
     // instead of a normal turn.
     private int _novaSpeaking;
     private CancellationTokenSource? _turnCts;
+
+    // Updated by SpeakAndWaitAsync, the one real chokepoint every actual
+    // utterance (streamed replies, canned local replies, and the heartbeat
+    // below) passes through - read by RunHeartbeatWatchdogAsync to decide
+    // how long it's actually been since anything was said out loud.
+    private DateTime _lastSpokenAtUtc = DateTime.MinValue;
 
     // What to show the overlay in place of the usual idle hint during a
     // silent tool-execution stretch - see OverlayState.CurrentActivity's
@@ -829,6 +834,11 @@ internal sealed class NovaAssistant
     // genuinely asking Nova to stop, not just talking over her mid-task.
     public void Interrupt()
     {
+        // Confirmed live: a task went completely dark for 2.5 minutes -
+        // no completion, no error, no silent-round diagnostic - with no
+        // way to tell from the log which of the (previously entirely
+        // silent) hard-cancel paths was responsible. This is one of them.
+        StatusLog.WriteLine("[interrupted - a stop command was detected, cancelling the current task]");
         _tts.StopPlayback();
         _turnCts?.Cancel();
         Volatile.Write(ref _novaSpeaking, 0);
@@ -866,6 +876,10 @@ internal sealed class NovaAssistant
 
         if (Interlocked.Exchange(ref _isBusy, 1) != 0)
         {
+            // Same diagnostic gap as Interrupt() above - this branch silently
+            // cancels whatever task was still running with no console trace
+            // of it ever having happened.
+            StatusLog.WriteLine("[a new utterance arrived while still busy - cancelling the previous task]");
             _tts.StopPlayback();
             _turnCts?.Cancel();
             Volatile.Write(ref _novaSpeaking, 0);
@@ -1653,8 +1667,101 @@ internal sealed class NovaAssistant
         }
     }
 
+    // A task ending on a round with no tool call and no text at all is a
+    // genuine bug shape (see this method's one call site), not a normal
+    // "task finished quietly" case - a real conclusion always has *some*
+    // text, even a one-line summary. Deliberately vague rather than
+    // claiming anything specific happened, since the whole point is that
+    // there's no reliable record of what actually did. Same wrap-in-its-
+    // own-try/catch reasoning as TryAnnounceUnhandledErrorAsync - if TTS
+    // itself is what's failing, this shouldn't throw a second exception
+    // out of the round loop that's already mid-task-teardown.
+    private async Task TryAnnounceSilentTaskEndAsync()
+    {
+        try
+        {
+            // "refusal" is the one stop_reason that's actually an
+            // explanation rather than just an empty API-level shrug - the
+            // model declined to respond, as opposed to the connection
+            // succeeding and simply coming back with nothing (end_turn/
+            // max_tokens with no content, still unexplained even with the
+            // reason known, see the console diagnostic logged alongside
+            // this in RunAssistantTurnAsync for that raw detail instead).
+            string text = _lastSilentRoundStopReason == "refusal"
+                ? "Hmm, I actually stopped myself from answering that just now - not sure exactly what triggered it, so it's worth trying again or rephrasing rather than assuming it finished."
+                : "Hmm, that didn't wrap up cleanly on my end - not fully sure what actually happened there, so it's worth double-checking rather than assuming it finished.";
+            await SpeakLocalReplyAsync(text);
+        }
+        catch
+        {
+            // Best-effort - see this method's own doc comment.
+        }
+    }
+
+    private static readonly TimeSpan HeartbeatCheckInterval = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan HeartbeatSilenceThreshold = TimeSpan.FromMinutes(1);
+
+    // Runs alongside the round loop for the lifetime of one task, pinging a
+    // short "still working" update out loud whenever it's actually been
+    // quiet for a while - see ProcessTextInputAsync's own call site for why
+    // this exists (repeated live reports of 20-85s stretches with zero
+    // console or spoken output, indistinguishable from a hang without
+    // asking out loud). Deliberately does NOT go through SpeakLocalReplyAsync
+    // - that method reassigns _turnCts to its own short-lived
+    // CancellationTokenSource, which would be actively wrong here: this
+    // runs *concurrently* with the round loop's own in-flight turn, so
+    // clobbering _turnCts mid-task would mean a real barge-in right after a
+    // heartbeat cancels the heartbeat's own token instead of the actual
+    // turn's - speaks directly on the caller-supplied token instead, the
+    // same one the round loop itself is already using.
+    // Only fires while genuinely not speaking (IsSpeaking gates it) - the
+    // round loop's own text-delta speech already covers "she's actively
+    // saying something," this is purely for the gaps in between.
+    private async Task RunHeartbeatWatchdogAsync(CancellationToken turnToken, CancellationToken watchdogToken)
+    {
+        using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(turnToken, watchdogToken);
+        try
+        {
+            while (true)
+            {
+                await Task.Delay(HeartbeatCheckInterval, linked.Token);
+
+                if (IsSpeaking || DateTime.UtcNow - _lastSpokenAtUtc < HeartbeatSilenceThreshold)
+                {
+                    continue;
+                }
+
+                string text = CurrentActivity is { } activity
+                    ? $"Still working - {activity}."
+                    : "Still working on this - not stuck, just taking a bit.";
+                StatusLog.WriteLine($"Nova: {text}");
+                await SpeakAndWaitAsync(text, linked.Token);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Normal - the task this was watching either finished or got
+            // cancelled by a real barge-in.
+        }
+        catch (Exception ex)
+        {
+            // A heartbeat glitch must never take down the actual task it's
+            // just narrating - log and let the round loop carry on.
+            ErrorLog.Log("RunHeartbeatWatchdogAsync", ex);
+        }
+    }
+
     private async Task SpeakLocalReplyAsync(string text)
     {
+        // Confirmed live: SpeakAndWaitAsync is audio-only, no console
+        // output at all - every canned local reply that goes through here
+        // (error announcements, the silent-task-end fallback, mode/sleep
+        // confirmations) could fire correctly and still be invisible in a
+        // pasted console log, unlike RunAssistantTurnAsync's own replies,
+        // which are echoed via streamed deltas as they're spoken. Real gap:
+        // made a fix impossible to confirm from a log alone whether it
+        // actually ran or not.
+        StatusLog.WriteLine($"Nova: {text}");
         var cts = new CancellationTokenSource();
         _turnCts = cts;
         try
@@ -1690,6 +1797,33 @@ internal sealed class NovaAssistant
     {
         var cts = new CancellationTokenSource();
         _turnCts = cts;
+
+        // Confirmed live, repeatedly: a slow round, a slow tool call, or
+        // several rounds in a row can go 20-80+ seconds with zero console
+        // output and zero spoken output, and the only way to find out
+        // whether Nova's actually still working or silently stuck was to
+        // ask her out loud - exactly the complaint this exists to remove.
+        // Own dedicated token, not `cts` itself - a normal, successful
+        // task completion never cancels `cts`, so tying the loop's
+        // lifetime to it would leave this running forever after the task
+        // it was meant to watch had already ended.
+        _lastSpokenAtUtc = DateTime.UtcNow;
+        var heartbeatCts = new CancellationTokenSource();
+        _ = RunHeartbeatWatchdogAsync(cts.Token, heartbeatCts.Token);
+
+        // Confirmed live: a task went dark after a round that completed
+        // normally (its tool call executed and printed "done") with none
+        // of the known exit signatures showing up afterward - no next
+        // round's "waiting on Claude" line, no silent-round diagnostic, no
+        // real reply, and none of Interrupt()/DispatchUtterance's steal-
+        // branch/the top-level cancellation catch (all of which now log).
+        // Every documented _isBusy-touching path was checked and ruled
+        // out, so this exists to catch whatever the actual mechanism is
+        // the next time it happens, rather than guessing at a 5th one -
+        // logs unconditionally, on every exit from this method, exactly
+        // how far it actually got.
+        int lastRoundReached = -1;
+        Volatile.Write(ref _roundLoopActive, 1);
 
         try
         {
@@ -1877,7 +2011,34 @@ internal sealed class NovaAssistant
                 }
                 else
                 {
-                    pendingToolCalls = await RunAssistantTurnAsync(cts.Token);
+                    // Confirmed live: a round that ends up making a tool
+                    // call, or (see below) ends up saying nothing at all,
+                    // prints literally no console output until that
+                    // outcome is already decided - a real API round-trip
+                    // this slow reads identically to a hang from a pasted
+                    // log alone. This is the one point every round actually
+                    // starts waiting on Claude, so it's the right place for
+                    // a visible marker regardless of how the round ends.
+                    StatusLog.WriteLine($"[round {round}: waiting on Claude...]");
+                    (pendingToolCalls, saidSomethingThisRound) = await RunAssistantTurnAsync(cts.Token);
+                    // Confirmed live: an identical search_email call ran
+                    // twice within seconds of each other, more than once,
+                    // despite an explicit "already called this" note added
+                    // to context after each round. One real, untested
+                    // possibility: both calls came from the *same* Claude
+                    // response (two tool_use blocks in one turn) rather
+                    // than two separate rounds - if so, the context note
+                    // (only added after a round finishes) could never have
+                    // had a chance to matter, since both calls would
+                    // already be decided before either executed. This
+                    // makes that visible instead of guessing again - if
+                    // duplicate names/inputs ever show up in one round's
+                    // own list, that confirms it.
+                    if (pendingToolCalls.Count > 1)
+                    {
+                        StatusLog.WriteLine($"[round {round}: {pendingToolCalls.Count} tool calls in one turn - {string.Join(", ", pendingToolCalls.Select(c => c.Name))}]");
+                    }
+
                     // Snapshot Gate 2 status right now, before Gate 1 is
                     // even asked - see _gate2NeededAtDispatch's own doc
                     // comment for why this can't wait until the actual
@@ -1895,9 +2056,48 @@ internal sealed class NovaAssistant
                     // give her a chance to actually address it (the task
                     // might not really be done) instead of ending on a
                     // reply that's now stale.
-                    string? closingInterjection = DrainPendingInterjections();
-                    if (closingInterjection is null)
+                    // Confirmed live: this check runs the instant she
+                    // finishes speaking, but a barge-in near the tail of
+                    // that reply is transcribed on its own background task
+                    // (see _pendingInterjectionTranscriptions) - without
+                    // this wait, a still-in-flight transcription simply
+                    // isn't in the queue yet and gets silently missed.
+                    // Bounded so a genuinely stuck transcription can't hang
+                    // task-closing indefinitely.
+                    var interjectionWait = Stopwatch.StartNew();
+                    while (Volatile.Read(ref _pendingInterjectionTranscriptions) > 0 && interjectionWait.ElapsedMilliseconds < 2000)
                     {
+                        await Task.Delay(50, cts.Token);
+                    }
+
+                    string? closingInterjection = DrainPendingInterjections();
+                    // See _pendingAmbientUpdates' own doc comment - "or
+                    // after the task is done" means right here: an update
+                    // that arrived mid-task and never got a natural
+                    // opening gets one more round to actually be
+                    // mentioned as part of wrapping up, instead of
+                    // silently archiving past it.
+                    string? closingAmbientUpdate = DrainPendingAmbientUpdates();
+                    if (closingInterjection is null && closingAmbientUpdate is null)
+                    {
+                        // A task ending on a round that said literally
+                        // nothing (no tool call, no text) is the exact
+                        // shape of a real, confirmed bug: the task just
+                        // vanishes with no record of how it ended, and a
+                        // *later*, unrelated question about it then gets
+                        // answered from guesswork - confirmed live as a
+                        // fabricated "yes, I built the spreadsheet" with no
+                        // tool call anywhere backing it up. Fixed at the
+                        // actual source instead of only asking the model to
+                        // remember to verify after the fact (see the
+                        // "reverse mistake" prompt guidance, which is still
+                        // worth keeping as a second layer, not a
+                        // replacement for this).
+                        if (!saidSomethingThisRound)
+                        {
+                            await TryAnnounceSilentTaskEndAsync();
+                        }
+
                         // The one point a task genuinely, cleanly finishes -
                         // archive the whole exchange and reset the live
                         // conversation here rather than letting it grow
@@ -1905,15 +2105,22 @@ internal sealed class NovaAssistant
                         // cancelled by cts - a stray barge-in racing the
                         // very end of a reply shouldn't be able to cut this
                         // off and leave the archive/reset half-done.
-                        await ArchiveCompletedTaskAsync();
+                        await ArchiveCompletedTaskAsync(round);
                         break; // final text-only reply, already spoken
                     }
 
-                    _conversation.Add(new MessageParam
+                    var closingNotes = new List<ContentBlockParam>();
+                    if (closingInterjection is not null)
                     {
-                        Role = Role.User,
-                        Content = $"[The user just said, while you were working: \"{closingInterjection}\"]",
-                    });
+                        closingNotes.Add(new TextBlockParam($"[The user just said, while you were working: \"{closingInterjection}\"]"));
+                    }
+
+                    if (closingAmbientUpdate is not null)
+                    {
+                        closingNotes.Add(new TextBlockParam($"[An ambient update came in, not urgent - mention it briefly as you wrap up if it's actually worth it: {closingAmbientUpdate}]"));
+                    }
+
+                    _conversation.Add(new MessageParam { Role = Role.User, Content = closingNotes });
                     continue;
                 }
 
@@ -2269,10 +2476,25 @@ internal sealed class NovaAssistant
         }
         finally
         {
+            // See lastRoundReached's own doc comment - unconditional, so
+            // every exit from this method leaves a real trace of how far
+            // it actually got, regardless of which path was taken.
+            StatusLog.WriteLine($"[task exiting - last round reached: {lastRoundReached}, IsBusy: {IsBusy}]");
+
+            // See _roundLoopActive's own doc comment - cleared here,
+            // unconditionally, same as the log line above, so it goes
+            // false the instant this method is genuinely done handling
+            // rounds rather than lingering true through IsBusy's own
+            // SpeechCooldownMs tail below.
+            Volatile.Write(ref _roundLoopActive, 0);
+
             if (ReferenceEquals(_turnCts, cts))
             {
                 _turnCts = null;
             }
+
+            heartbeatCts.Cancel();
+            heartbeatCts.Dispose();
         }
 
         if (cts.IsCancellationRequested)
@@ -2299,11 +2521,40 @@ internal sealed class NovaAssistant
     // got a formal content_block_stop because the stream was cut off - still
     // gets saved to `_conversation`. Otherwise an interrupted reply vanishes from
     // history entirely and the next turn lands on a broken, gappy conversation.
-    private async Task<List<PendingToolCall>> RunAssistantTurnAsync(CancellationToken cancellationToken)
+    // SaidSomething is novaPrefixWritten's value at the end of the turn -
+    // true the moment any text delta arrives, false if the whole turn was
+    // silent (no tool calls either). See its one call site for why this
+    // matters: a task ending on a round that said literally nothing is the
+    // exact shape of a real, confirmed bug (a task dying with no
+    // conclusion, then a *later*, unrelated question getting answered with
+    // a fabricated "yes it's done" since there was never a real answer on
+    // record) - this is the fix at its actual source, not another prompt
+    // instruction asking the model to remember to avoid it.
+    private async Task<(List<PendingToolCall> ToolCalls, bool SaidSomething)> RunAssistantTurnAsync(CancellationToken cancellationToken)
     {
+        _lastSilentRoundStopReason = null;
+
         MessageCreateParams parameters = new()
         {
-            MaxTokens = 2048,
+            // Raised from 2048 - confirmed live as the actual root cause of
+            // every "silent round" seen so far, not a mystery: a large tool
+            // call (e.g. a spreadsheet update covering many rows) can need
+            // more than 2048 output tokens for its JSON input alone. When
+            // that happens, the stream hits max_tokens mid-block, so the
+            // tool_use block's content_block_stop event never fires (see
+            // the TryPickContentBlockStop handler below) and the entire
+            // partially-built call - already paid for in full - is silently
+            // dropped rather than executed. Not a rare edge case: it's the
+            // predictable outcome any time a task's own required output
+            // (not reasoning, the actual tool input) exceeds the cap.
+            // Output tokens are billed by what's actually generated, not by
+            // the cap itself, so raising this costs nothing on turns that
+            // don't need it. Doubled to 16384 for extra headroom - the one
+            // real downside (a genuinely runaway/looping generation burning
+            // more tokens and taking longer to hit the cap) is bounded and
+            // still covered by the heartbeat watchdog above, which pings
+            // during exactly this kind of silent, no-text-yet stretch.
+            MaxTokens = 16384,
             Model = "claude-sonnet-5",
             System = SystemPrompt.Text,
             Tools = ToolCatalog.Tools,
@@ -2326,6 +2577,12 @@ internal sealed class NovaAssistant
         bool novaPrefixWritten = false;
         long? openTextIndex = null;
         var novaReply = new StringBuilder();
+        // Captured from the message-level delta event (distinct from the
+        // per-content-block deltas handled below) purely for the silent-
+        // round diagnostic further down - not needed for any of the actual
+        // reply-assembly logic above.
+        string? stopReason = null;
+        long outputTokens = 0;
 
         try
         {
@@ -2392,6 +2649,22 @@ internal sealed class NovaAssistant
                     continue;
                 }
 
+                if (evt.TryPickDelta(out var messageDeltaEvt))
+                {
+                    // Message-level delta, fires once near the end of the
+                    // stream - carries the real stop_reason (end_turn,
+                    // max_tokens, refusal, etc.) and final output token
+                    // count, neither of which the per-content-block events
+                    // above expose. Only actually used below if this turn
+                    // otherwise looks silent - the one case where "the API
+                    // call itself succeeded" and "nothing worth reporting
+                    // came out of it" both being true needs an explanation
+                    // more specific than a guess.
+                    stopReason = messageDeltaEvt.Delta.StopReason?.Raw();
+                    outputTokens = messageDeltaEvt.Usage.OutputTokens;
+                    continue;
+                }
+
                 if (evt.TryPickContentBlockStop(out var stopEvt))
                 {
                     long idx = stopEvt.Index;
@@ -2455,9 +2728,15 @@ internal sealed class NovaAssistant
             }
 
             RecordTranscript(isUser: false, novaReply.ToString().Trim());
+
+            if (toolCalls.Count == 0 && !novaPrefixWritten)
+            {
+                _lastSilentRoundStopReason = stopReason;
+                StatusLog.WriteLine($"[silent round - stop_reason: {stopReason ?? "none received"}, output_tokens: {outputTokens}]");
+            }
         }
 
-        return toolCalls;
+        return (toolCalls, novaPrefixWritten);
     }
 
     // Speaks one chunk of text and waits for it to actually finish playing -
@@ -2477,6 +2756,7 @@ internal sealed class NovaAssistant
         finally
         {
             Volatile.Write(ref _novaSpeaking, 0);
+            _lastSpokenAtUtc = DateTime.UtcNow;
         }
     }
 
