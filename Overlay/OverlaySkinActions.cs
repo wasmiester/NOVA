@@ -14,4 +14,7 @@ internal sealed record OverlaySkinActions(
     Action Close,
     // Called by a skin's own theme-toggle click (ARC/AURA only) so
     // OverlayWindow can persist the change - see IOverlaySkin.IsAlternateTheme.
-    Action ThemeChanged);
+    Action ThemeChanged,
+    // Called by the maximized panel's type-to-talk input on Enter/Send -
+    // see NovaAssistant.DispatchTypedText.
+    Action<string> SendTypedText);

@@ -236,4 +236,64 @@ internal static class ToolDescriptions
         "list_tools" => "checking which tools already exist",
         _ => $"using {call.Name}",
     };
+
+    // Short, verb-only form for the overlay's maximized activity feed (see
+    // NovaAssistant's activity-history recording) - deliberately drops the
+    // dynamic argument (a search query, a file path, a field label)
+    // DescribeToolStatus above includes, since that's exactly what a
+    // terminal-style scrolling log doesn't have room for and doesn't need:
+    // the full detail is still one click away in the actual console log,
+    // this is just "what kind of thing is happening right now." A separate
+    // explicit switch rather than deriving this from DescribeToolStatus's
+    // own string (e.g. stripping everything after "for") - the formats
+    // vary too much across tools (quoted-suffix, parenthetical, colon-
+    // prefixed) for one generic trim rule to hold up cleanly.
+    public static string DescribeToolActivity(PendingToolCall call) => call.Name switch
+    {
+        "read_file" => "reading a file",
+        "list_files" => "listing files",
+        "edit_file" => "writing a file",
+        "revert_file_edit" => "reverting a file",
+        "list_file_edits" => "checking edit history",
+        "delete_path" => "deleting a file",
+        "run_command" => "running a command",
+        "save_memory" => "saving to memory",
+        "search_memory" => "searching memory",
+        "search_conversation_history" => "searching past tasks",
+        "read_screen" => "reading the screen",
+        "scroll_desktop" => "scrolling",
+        "open_path" => "opening a file",
+        "open_watched_terminal" => "opening a terminal",
+        "interact_desktop" => (ToolInput.GetString(call.Input, "action") ?? "click") == "type" ? "typing" : "clicking",
+        "browser_navigate" => "opening a page",
+        "browser_read" => "reading the browser page",
+        "browser_fill" => "filling in a field",
+        "browser_select" => "selecting an option",
+        "browser_check" => (ToolInput.GetBool(call.Input, "checked") ?? true) ? "checking a box" : "unchecking a box",
+        "browser_upload" => "uploading a file",
+        "browser_click" => "clicking a button",
+        "search_email" => "searching your email",
+        "read_email" => "reading the email",
+        "send_email" => "sending an email",
+        "list_calendar_events" => "checking your calendar",
+        "create_calendar_event" => "adding a calendar event",
+        "read_doc" => "reading the doc",
+        "create_doc" => "creating a doc",
+        "append_to_doc" => "adding text to the doc",
+        "replace_in_doc" => "editing the doc",
+        "search_drive" => "searching your Drive",
+        "upload_to_drive" => "uploading to Drive",
+        "read_sheet" => "reading the spreadsheet",
+        "create_sheet" => "creating a spreadsheet",
+        "append_sheet_rows" => "adding rows to the spreadsheet",
+        "update_sheet_range" => "updating the spreadsheet",
+        "read_slides" => "reading the presentation",
+        "create_presentation" => "creating a presentation",
+        "append_slide" => "adding a slide",
+        "replace_text_in_slides" => "editing the presentation",
+        "build_tool" => "building a tool",
+        "run_tool" => "running a tool",
+        "list_tools" => "checking existing tools",
+        _ => $"using {call.Name}",
+    };
 }

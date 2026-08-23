@@ -298,6 +298,17 @@ internal sealed class NovaAssistant
     private readonly List<TranscriptEntry> _transcript = [];
     private readonly Lock _transcriptLock = new();
 
+    // Same shape as _transcript above, for the overlay's maximized
+    // activity feed (a terminal-style, append-only log of what's actually
+    // happening tool-call by tool-call - see RecordActivity/
+    // SnapshotActivityHistory) rather than the conversational You/Nova
+    // turns _transcript holds. A smaller cap than transcript's 100 - these
+    // churn faster and any one entry matters far less individually, so
+    // there's no real reason to keep as many around.
+    private const int MaxActivityEntries = 60;
+    private readonly List<ActivityEntry> _activityHistory = [];
+    private readonly Lock _activityLock = new();
+
     // The current task's own transcript, in plain "User:"/"Nova:" lines -
     // appended to by RecordTranscript alongside _transcript above (same
     // lock), but scoped to just this task and cleared at each boundary
@@ -510,6 +521,43 @@ internal sealed class NovaAssistant
             if (_transcript.Count > MaxTranscriptEntries)
             {
                 _transcript.RemoveAt(0);
+            }
+        }
+    }
+
+    // A snapshot copy (not a live reference) so the overlay's polling
+    // thread never sees the list mutate mid-read - same reasoning as
+    // SnapshotTranscript above.
+    internal IReadOnlyList<ActivityEntry> SnapshotActivityHistory()
+    {
+        lock (_activityLock)
+        {
+            return _activityHistory.ToArray();
+        }
+    }
+
+    // Appends a new activity-feed entry, settling whatever was previously
+    // the in-progress one first - at most one entry is ever InProgress at
+    // a time, matching the "append a new line, don't erase the last one"
+    // terminal behavior the overlay's activity feed is built around (see
+    // ActivityEntry's own doc comment). Called from the tool-execution
+    // loop right alongside the existing _currentActivity write, using
+    // ToolDescriptions.DescribeToolActivity's shorter verb-only text
+    // rather than DescribeToolStatus's fuller (query-included) one - see
+    // that method's own doc comment for why.
+    private void RecordActivity(string text)
+    {
+        lock (_activityLock)
+        {
+            if (_activityHistory.Count > 0 && _activityHistory[^1].InProgress)
+            {
+                _activityHistory[^1] = _activityHistory[^1] with { InProgress = false };
+            }
+
+            _activityHistory.Add(new ActivityEntry(text, InProgress: true));
+            if (_activityHistory.Count > MaxActivityEntries)
+            {
+                _activityHistory.RemoveAt(0);
             }
         }
     }
@@ -1110,17 +1158,31 @@ internal sealed class NovaAssistant
         RecordTranscript(isUser: true, input);
         Volatile.Write(ref _currentActivity, null); // transcribing's done - the tool loop sets its own activity from here
 
-        // Mode-switch and the sleep phrase are both checked locally, before
-        // anything reaches Claude - keeps them free and instant rather than
-        // a real conversational turn. Mode-switch first: "switch to key
-        // bind mode" shouldn't also get evaluated as a sleep phrase (it
-        // isn't one, but checking order is what guarantees that stays true
-        // as phrasing evolves).
+        if (await TryHandleControlPhraseAsync(input))
+        {
+            return;
+        }
+
+        await ProcessTextInputAsync(input);
+    }
+
+    // Shared by ProcessUtteranceAsync (after transcription) and
+    // ProcessTypedTextAsync (typed text needs no transcription) - mode-
+    // switch and the sleep phrase are both checked locally before anything
+    // reaches Claude, so they're free and instant regardless of how the
+    // text arrived. Mode-switch first: "switch to key bind mode" shouldn't
+    // also get evaluated as a sleep phrase (it isn't one, but checking
+    // order is what guarantees that stays true as phrasing evolves).
+    // Returns true if the input was fully handled here (IsBusy already
+    // reset too) and the caller should stop; false if it should continue
+    // on to ProcessTextInputAsync.
+    private async Task<bool> TryHandleControlPhraseAsync(string input)
+    {
         if (VoiceControlPhrases.TryDetectModeSwitch(input) is { } newMode)
         {
             await SwitchActivationModeAsync(newMode);
             Volatile.Write(ref _isBusy, 0);
-            return;
+            return true;
         }
 
         if (VoiceControlPhrases.ContainsSleepPhrase(input))
@@ -1129,6 +1191,53 @@ internal sealed class NovaAssistant
             StatusLog.WriteLine("[going dormant]");
             await SpeakLocalReplyAsync("Okay, taking a break.");
             Volatile.Write(ref _isBusy, 0);
+            return true;
+        }
+
+        return false;
+    }
+
+    // The type-to-talk input's entry point (see the overlay's maximize-mode
+    // text box) - mirrors DispatchUtterance's shape (atomic claim-or-steal
+    // on _isBusy, same cleanup if something was already running) but skips
+    // straight to the text, since there's nothing to transcribe. Typing is
+    // always treated as deliberate, unlike ambient speech - there's no
+    // "accidental typing" risk the sleep gate exists to guard against, so
+    // this always wakes her rather than silently dropping the message, the
+    // same reasoning TriggerReadyAcknowledgment's hotkey wake already uses.
+    public void DispatchTypedText(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return;
+        }
+
+        while (_pendingInterjections.TryDequeue(out _))
+        {
+        }
+
+        if (Interlocked.Exchange(ref _isBusy, 1) != 0)
+        {
+            // Same diagnostic gap as DispatchUtterance's own steal branch -
+            // see its own comment.
+            StatusLog.WriteLine("[typed text arrived while still busy - cancelling the previous task]");
+            _tts.StopPlayback();
+            _turnCts?.Cancel();
+            Volatile.Write(ref _novaSpeaking, 0);
+            Volatile.Write(ref _currentActivity, null);
+        }
+
+        _engaged = true;
+        _ = ProcessTypedTextAsync(text);
+    }
+
+    private async Task ProcessTypedTextAsync(string input)
+    {
+        StatusLog.WriteLine($"You (typed): {input}");
+        RecordTranscript(isUser: true, input);
+
+        if (await TryHandleControlPhraseAsync(input))
+        {
             return;
         }
 

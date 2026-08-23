@@ -12,6 +12,12 @@ internal readonly record struct OverlayState(
     bool Asleep,      // !Engaged - the hotkey is the only way back from this
     ActivationMode Mode,
     IReadOnlyList<TranscriptEntry> Transcript,
+    // The maximized activity feed's own rolling log - see
+    // NovaAssistant.RecordActivity/SnapshotActivityHistory. Separate from
+    // Transcript above since it's a different kind of history (tool-call
+    // steps, not conversational turns) with its own append-only terminal-
+    // style rendering, not the You/Nova bubble/line treatment.
+    IReadOnlyList<ActivityEntry> ActivityHistory,
     bool ChromeLinked,
     bool GmailLinked,
     // What Nova's actually doing right now during a silent tool-execution

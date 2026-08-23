@@ -35,6 +35,10 @@ internal sealed class ArcSkin : IOverlaySkin
     private readonly SolidColorBrush _warnBrush = new(GoldWarn);
     private readonly SolidColorBrush _warnBgBrush = new(Color.FromArgb(20, GoldWarn.R, GoldWarn.G, GoldWarn.B));
     private readonly SolidColorBrush _warnBorderBrush = new(Color.FromArgb(115, GoldWarn.R, GoldWarn.G, GoldWarn.B));
+    // The type-to-talk Send button's subtle fill - same "low-alpha tint of
+    // the accent" shape as _warnBgBrush above, just tracking _accentBrush's
+    // own gold/cyan toggle instead of _warnBrush's.
+    private readonly SolidColorBrush _accentBgBrush = new(Color.FromArgb(31, GoldAccent.R, GoldAccent.G, GoldAccent.B));
     private static readonly Color GoldHair = Color.FromRgb(0x3a, 0x2e, 0x1c);
     private static readonly Color CyanHair = Color.FromRgb(0x23, 0x41, 0x58);
     private readonly SolidColorBrush _hairBrush = new(GoldHair);
@@ -53,6 +57,7 @@ internal sealed class ArcSkin : IOverlaySkin
     private readonly Button _themeButton;
     private readonly Button _maximizeButton;
     private readonly TranscriptPanel _transcript;
+    private readonly ActivityLogPanel _activityLog;
     private readonly TextBlock _chromeChip;
     private readonly TextBlock _gmailChip;
     private OverlaySkinActions? _actions;
@@ -91,8 +96,18 @@ internal sealed class ArcSkin : IOverlaySkin
         closeButton.Click += (_, _) => _actions?.Close();
 
         _transcript = new TranscriptPanel(BuildTranscriptRow, width: 220, thumbColor: Color.FromArgb(204, GoldAccent.R, GoldAccent.G, GoldAccent.B));
+        // Shorter than the transcript (100 vs. its default 220) - the panel
+        // width is fixed (see OverlayLayout.PanelWidth's own doc comment),
+        // so this stacks above the transcript rather than sitting beside
+        // it, and doesn't need to compete for the same vertical space.
+        _activityLog = new ActivityLogPanel(BuildActivityRow, width: 220, thumbColor: Color.FromArgb(204, GoldAccent.R, GoldAccent.G, GoldAccent.B), height: 100);
         _maximizeButton = MakeChromeButton("☰");
-        _maximizeButton.Click += (_, _) => _transcript.IsVisible = !_transcript.IsVisible;
+        _maximizeButton.Click += (_, _) =>
+        {
+            bool expanded = !_transcript.IsVisible;
+            _transcript.IsVisible = expanded;
+            _activityLog.IsVisible = expanded;
+        };
 
         var headerButtons = new StackPanel { Orientation = Orientation.Horizontal };
         headerButtons.Children.Add(_themeButton);
@@ -192,7 +207,53 @@ internal sealed class ArcSkin : IOverlaySkin
         stack.Children.Add(_subLabel);
         stack.Children.Add(_progressBar);
         stack.Children.Add(_modeButton);
+
+        // Activity feed above the transcript, both revealed together by
+        // the same maximize toggle - see _maximizeButton's click handler
+        // above. Labels match TranscriptScrollBarStyle's own small-caps
+        // convention (see _arc-log-label in the design mockup this is
+        // built from).
+        var activityLabel = new TextBlock { Text = "ACTIVITY", Foreground = _textLoBrush, FontFamily = new FontFamily("Consolas"), FontSize = 11, Margin = new Thickness(0, 10, 0, 4) };
+        var conversationLabel = new TextBlock { Text = "CONVERSATION", Foreground = _textLoBrush, FontFamily = new FontFamily("Consolas"), FontSize = 11, Margin = new Thickness(0, 10, 0, 4) };
+        stack.Children.Add(activityLabel);
+        stack.Children.Add(_activityLog.Root);
+        stack.Children.Add(conversationLabel);
         stack.Children.Add(_transcript.Root);
+
+        var typeInput = new TextBox
+        {
+            PlaceholderText = "type instead of speak…",
+            FontFamily = new FontFamily("Consolas"),
+            FontSize = 12,
+            Background = GroundBrush,
+            Foreground = _textHiBrush,
+            BorderBrush = _hairBrush,
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(4),
+            Padding = new Thickness(9, 7, 9, 7),
+        };
+        var sendButton = new Button
+        {
+            Content = "SEND",
+            FontFamily = new FontFamily("Consolas"),
+            FontSize = 12,
+            Foreground = _accentBrush,
+            Background = _accentBgBrush,
+            BorderBrush = _hairBrush,
+            BorderThickness = new Thickness(1),
+            Padding = new Thickness(12, 0, 12, 0),
+            Cursor = new Cursor(StandardCursorType.Hand),
+        };
+        FlatButtonStyle.Apply(sendButton, cornerRadius: 4);
+        TypeToTalkInput.WireUp(typeInput, sendButton, text => _actions?.SendTypedText(text));
+        var typeRow = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto"), Margin = new Thickness(0, 8, 0, 0) };
+        Grid.SetColumn(typeInput, 0);
+        Grid.SetColumn(sendButton, 1);
+        typeInput.Margin = new Thickness(0, 0, 6, 0);
+        typeRow.Children.Add(typeInput);
+        typeRow.Children.Add(sendButton);
+        stack.Children.Add(typeRow);
+
         stack.Children.Add(statusBar);
 
         _panelGlow = new DropShadowEffect { Color = _accentBrush.Color, BlurRadius = 40, OffsetX = 0, OffsetY = 0, Opacity = 0.25 };
@@ -271,6 +332,7 @@ internal sealed class ArcSkin : IOverlaySkin
         SetChip(_gmailChip, "GMAIL", state.GmailLinked);
 
         _transcript.Update(state.Transcript);
+        _activityLog.Update(state.ActivityHistory);
     }
 
     // .arc .chip b { color: var(--accent); font-weight: 600; } in the
@@ -349,7 +411,9 @@ internal sealed class ArcSkin : IOverlaySkin
         _panelGlow.Color = accent;
         _faceGlow.Color = accent;
         _hairBrush.Color = _goldTheme ? GoldHair : CyanHair;
+        _accentBgBrush.Color = Color.FromArgb(31, accent.R, accent.G, accent.B);
         _transcript.SetThumbColor(Color.FromArgb(204, accent.R, accent.G, accent.B));
+        _activityLog.SetThumbColor(Color.FromArgb(204, accent.R, accent.G, accent.B));
         _actions?.ThemeChanged();
     }
 
@@ -400,6 +464,42 @@ internal sealed class ArcSkin : IOverlaySkin
             Margin = new Thickness(0, 0, 0, 6),
             Child = content,
         };
+    }
+
+    // Same thin-left-border shape as BuildTranscriptRow above, but a single
+    // line per entry (no You/Nova tag - there's only ever one "speaker",
+    // the tool loop itself) with an inline dots run for the in-progress
+    // entry, matching the mockup's ARC activity-feed treatment.
+    private (Control Row, TextBlock? Dots) BuildActivityRow(ActivityEntry entry)
+    {
+        IBrush borderBrush = entry.InProgress ? _accentBrush : _hairBrush;
+        IBrush textBrush = entry.InProgress ? _textHiBrush : _textLoBrush;
+
+        var content = new StackPanel { Orientation = Orientation.Horizontal };
+        content.Children.Add(new TextBlock
+        {
+            Text = entry.Text,
+            Foreground = textBrush,
+            FontFamily = new FontFamily("Consolas"),
+            FontSize = 12,
+            TextWrapping = TextWrapping.Wrap,
+        });
+        TextBlock? dots = null;
+        if (entry.InProgress)
+        {
+            dots = new TextBlock { Foreground = textBrush, FontFamily = new FontFamily("Consolas"), FontSize = 12 };
+            content.Children.Add(dots);
+        }
+
+        var row = new Border
+        {
+            BorderBrush = borderBrush,
+            BorderThickness = new Thickness(2, 0, 0, 0),
+            Padding = new Thickness(8, 2, 0, 2),
+            Margin = new Thickness(0, 0, 0, 4),
+            Child = content,
+        };
+        return (row, dots);
     }
 
     private Button MakeChromeButton(string glyph)

@@ -125,7 +125,8 @@ internal sealed class AvaloniaOverlayWindow : Window
                 _popup.ApplyStyle(_skins[_activeIndex].PopupStyle);
                 _credentialsPopup.ApplyStyle(_skins[_activeIndex].PopupStyle);
                 SaveState();
-            });
+            },
+            SendTypedText: text => _assistant.DispatchTypedText(text));
 
         _skins = [new ArcSkin(), new WebSkin(), new AuraSkin()];
         foreach (IOverlaySkin skin in _skins)
@@ -265,6 +266,7 @@ internal sealed class AvaloniaOverlayWindow : Window
             Asleep: !_assistant.Engaged,
             Mode: _assistant.Mode,
             Transcript: _assistant.SnapshotTranscript(),
+            ActivityHistory: _assistant.SnapshotActivityHistory(),
             ChromeLinked: _assistant.ChromeLinked,
             GmailLinked: _assistant.GmailLinked,
             CurrentActivity: _assistant.CurrentActivity,

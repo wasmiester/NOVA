@@ -29,6 +29,7 @@ internal sealed class WebSkin : IOverlaySkin
     private readonly Button _modeButton;
     private readonly Button _sleepButton;
     private readonly TranscriptPanel _transcript;
+    private readonly ActivityLogPanel _activityLog;
     private OverlaySkinActions? _actions;
     private ActivationMode _mode = ActivationMode.Prompted;
     private bool _engaged = true;
@@ -80,17 +81,24 @@ internal sealed class WebSkin : IOverlaySkin
         _sleepButton = MakePixelButton("Z");
         _sleepButton.Click += (_, _) => _actions?.SetEngaged(!_engaged);
         _transcript = new TranscriptPanel(BuildTranscriptRow, width: 220, thumbColor: Color.FromArgb(230, 0xff, 0xcb, 0x47));
+        // Shorter than the transcript (100 vs. its default 220) - same
+        // "stacks above rather than beside" reasoning as ArcSkin, since
+        // OverlayLayout.PanelWidth is fixed.
+        _activityLog = new ActivityLogPanel(BuildActivityRow, width: 220, thumbColor: Color.FromArgb(230, 0xff, 0xcb, 0x47), height: 100);
         // .web .log-head "ACTIVITY LOG" in the mockup, above the transcript -
         // only actually meaningful (and only shown) while the transcript
         // itself is expanded, same as the mockup's log only existing at all
         // in the maximized view.
         _logHead = new TextBlock { Text = "ACTIVITY LOG", Foreground = TextLoBrush, FontFamily = WebFont, FontWeight = FontWeight.Bold, FontSize = 13, Margin = new Thickness(0, 12, 0, 4), IsVisible = false };
+        var conversationHead = new TextBlock { Text = "CONVERSATION", Foreground = TextLoBrush, FontFamily = WebFont, FontWeight = FontWeight.Bold, FontSize = 13, Margin = new Thickness(0, 12, 0, 4), IsVisible = false };
         var maximizeButton = MakePixelButton("☰");
         maximizeButton.Click += (_, _) =>
         {
             bool expanded = !_transcript.IsVisible;
             _transcript.IsVisible = expanded;
+            _activityLog.IsVisible = expanded;
             _logHead.IsVisible = expanded;
+            conversationHead.IsVisible = expanded;
         };
         var cycleButton = MakePixelButton("⟳");
         cycleButton.Click += (_, _) => _actions?.CycleSkin();
@@ -218,6 +226,36 @@ internal sealed class WebSkin : IOverlaySkin
         // extra height from OverlayLayout.PanelMinHeight - keeping the
         // status bar pinned to the true bottom edge regardless of which
         // skin's natural content is shorter than ARC's.
+        var typeInput = new TextBox
+        {
+            PlaceholderText = "TYPE INSTEAD OF SPEAK…",
+            FontFamily = WebFont,
+            FontWeight = FontWeight.Bold,
+            FontSize = 12,
+            Background = new SolidColorBrush(Color.FromRgb(0x12, 0x20, 0x2e)),
+            Foreground = TextBrush,
+            BorderBrush = EdgeBrush,
+            BorderThickness = new Thickness(2),
+            CornerRadius = new CornerRadius(0),
+            Padding = new Thickness(8, 6, 8, 6),
+        };
+        var sendButton = MakePixelButton("SEND");
+        sendButton.Width = double.NaN;
+        sendButton.Padding = new Thickness(10, 0, 10, 0);
+        sendButton.Background = AmberBrush;
+        sendButton.Foreground = new SolidColorBrush(Color.FromRgb(12, 34, 102));
+        TypeToTalkInput.WireUp(typeInput, sendButton, text => _actions?.SendTypedText(text));
+        var typeRow = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto"), Margin = new Thickness(0, 8, 0, 0), IsVisible = false };
+        Grid.SetColumn(typeInput, 0);
+        Grid.SetColumn(sendButton, 1);
+        typeInput.Margin = new Thickness(0, 0, 4, 0);
+        typeRow.Children.Add(typeInput);
+        typeRow.Children.Add(sendButton);
+        // Tied to the same maximize toggle as the log/transcript - the
+        // input only makes sense once there's a conversation visible to
+        // type into.
+        maximizeButton.Click += (_, _) => typeRow.IsVisible = _transcript.IsVisible;
+
         var innerContent = new StackPanel { Margin = new Thickness(16, 0, 16, 0) };
         innerContent.Children.Add(faceGrid);
         innerContent.Children.Add(stateLabelBox);
@@ -225,7 +263,10 @@ internal sealed class WebSkin : IOverlaySkin
         innerContent.Children.Add(_progressBar);
         innerContent.Children.Add(_modeButton);
         innerContent.Children.Add(_logHead);
+        innerContent.Children.Add(_activityLog.Root);
+        innerContent.Children.Add(conversationHead);
         innerContent.Children.Add(_transcript.Root);
+        innerContent.Children.Add(typeRow);
 
         var layout = new Grid();
         layout.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
@@ -326,6 +367,7 @@ internal sealed class WebSkin : IOverlaySkin
         SetChip(_gmailChip, "GMAIL", state.GmailLinked);
 
         _transcript.Update(state.Transcript);
+        _activityLog.Update(state.ActivityHistory);
     }
 
     // .web .status-chip b { color: var(--green); font-weight: 800; } in the
@@ -476,6 +518,28 @@ internal sealed class WebSkin : IOverlaySkin
         row.Children.Add(bubble);
         row.Children.Add(tail);
         return row;
+    }
+
+    // WEB's activity feed: a terminal ">" prompt per line instead of a
+    // speech bubble - matches the pixel-terminal treatment from the source
+    // mockup rather than reusing the bubble look, which only makes sense
+    // for an actual back-and-forth conversation.
+    private static (Control Row, TextBlock? Dots) BuildActivityRow(ActivityEntry entry)
+    {
+        var promptBrush = new SolidColorBrush(entry.InProgress ? GreenColor : TextLoBrush.Color);
+        IBrush textBrush = entry.InProgress ? TextBrush : TextLoBrush;
+
+        var line = new StackPanel { Orientation = Orientation.Horizontal };
+        line.Children.Add(new TextBlock { Text = "> ", Foreground = promptBrush, FontFamily = WebFont, FontWeight = FontWeight.Bold, FontSize = 12 });
+        line.Children.Add(new TextBlock { Text = entry.Text.ToUpperInvariant(), Foreground = textBrush, FontFamily = WebFont, FontWeight = FontWeight.Bold, FontSize = 12, TextWrapping = TextWrapping.Wrap });
+        TextBlock? dots = null;
+        if (entry.InProgress)
+        {
+            dots = new TextBlock { Foreground = promptBrush, FontFamily = WebFont, FontWeight = FontWeight.Bold, FontSize = 12 };
+            line.Children.Add(dots);
+        }
+
+        return (new Border { Padding = new Thickness(0, 2, 0, 2), Child = line }, dots);
     }
 
     // .web .pixel-btn: font-size 30px, border 3px in the mockup's 2x space

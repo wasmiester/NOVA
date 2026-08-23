@@ -24,6 +24,12 @@ internal sealed class AuraSkin : IOverlaySkin
     private readonly Button _themeButton;
     private readonly Button[] _chromeButtons;
     private readonly TranscriptPanel _transcript;
+    private readonly ActivityLogPanel _activityLog;
+    private readonly TextBlock _activityLabel;
+    private readonly TextBlock _conversationLabel;
+    private readonly TextBox _typeInput;
+    private readonly Button _sendButton;
+    private readonly Grid _typeRow;
     private readonly Border _chromeChipBorder;
     private readonly Border _gmailChipBorder;
     private readonly Ellipse _chromeDot;
@@ -84,8 +90,22 @@ internal sealed class AuraSkin : IOverlaySkin
         closeButton.Click += (_, _) => _actions?.Close();
 
         _transcript = new TranscriptPanel(BuildTranscriptRow, width: 220, thumbColor: Color.FromArgb(179, 122, 108, 190));
+        // Shorter than the transcript (100 vs. its default 220) - same
+        // "stacks above rather than beside" reasoning as ARC/WEB, since
+        // OverlayLayout.PanelWidth is fixed.
+        _activityLog = new ActivityLogPanel(BuildActivityRow, width: 220, thumbColor: Color.FromArgb(179, 122, 108, 190), height: 100);
+        _activityLabel = new TextBlock { Text = "activity", FontSize = 12, Margin = new Thickness(2, 10, 0, 4), IsVisible = false };
+        _conversationLabel = new TextBlock { Text = "conversation", FontSize = 12, Margin = new Thickness(2, 10, 0, 4), IsVisible = false };
         var maximizeButton = MakeChromeButton("☰");
-        maximizeButton.Click += (_, _) => _transcript.IsVisible = !_transcript.IsVisible;
+        maximizeButton.Click += (_, _) =>
+        {
+            bool expanded = !_transcript.IsVisible;
+            _transcript.IsVisible = expanded;
+            _activityLog.IsVisible = expanded;
+            _activityLabel.IsVisible = expanded;
+            _conversationLabel.IsVisible = expanded;
+            _typeRow.IsVisible = expanded;
+        };
         _chromeButtons = [_themeButton, _sleepButton, maximizeButton, cycleButton, closeButton];
 
         var headerButtons = new StackPanel { Orientation = Orientation.Horizontal };
@@ -205,16 +225,53 @@ internal sealed class AuraSkin : IOverlaySkin
         coreContent.Children.Add(_progressBar);
         coreContent.Children.Add(_modeButton);
 
+        // AURA's type-to-talk row: a pill-shaped glass field matching the
+        // chip/card language elsewhere in this skin, rather than WEB/ARC's
+        // squarer boxed input.
+        _typeInput = new TextBox
+        {
+            PlaceholderText = "type instead of speak…",
+            FontSize = 13,
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(15),
+            Padding = new Thickness(12, 6, 12, 6),
+        };
+        _sendButton = new Button
+        {
+            Content = "send",
+            FontSize = 13,
+            FontWeight = FontWeight.SemiBold,
+            Foreground = Brushes.White,
+            BorderThickness = new Thickness(0),
+            Padding = new Thickness(14, 0, 14, 0),
+            Cursor = new Cursor(StandardCursorType.Hand),
+        };
+        FlatButtonStyle.Apply(_sendButton, cornerRadius: 15);
+        TypeToTalkInput.WireUp(_typeInput, _sendButton, text => _actions?.SendTypedText(text));
+        _typeRow = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto"), Margin = new Thickness(0, 8, 0, 0), IsVisible = false };
+        Grid.SetColumn(_typeInput, 0);
+        Grid.SetColumn(_sendButton, 1);
+        _typeInput.Margin = new Thickness(0, 0, 6, 0);
+        _typeRow.Children.Add(_typeInput);
+        _typeRow.Children.Add(_sendButton);
+
+        var bottomStack = new StackPanel();
+        bottomStack.Children.Add(_activityLabel);
+        bottomStack.Children.Add(_activityLog.Root);
+        bottomStack.Children.Add(_conversationLabel);
+        bottomStack.Children.Add(_transcript.Root);
+        bottomStack.Children.Add(_typeRow);
+
         var stack = new Grid();
         stack.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         stack.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
         stack.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         Grid.SetRow(header, 0);
         Grid.SetRow(coreContent, 1);
-        Grid.SetRow(_transcript.Root, 2);
+        Grid.SetRow(bottomStack, 2);
         stack.Children.Add(header);
         stack.Children.Add(coreContent);
-        stack.Children.Add(_transcript.Root);
+        stack.Children.Add(bottomStack);
 
         // WEB's edge-to-edge chrome doesn't apply here - AURA's status row
         // is just centered pill chips, matching the mockup's own design -
@@ -286,6 +343,7 @@ internal sealed class AuraSkin : IOverlaySkin
         SetChip(_gmailChipText, _gmailDot, "Gmail", state.GmailLinked);
 
         _transcript.Update(state.Transcript);
+        _activityLog.Update(state.ActivityHistory);
     }
 
     private void SetChip(TextBlock text, Ellipse dot, string label, bool linked)
@@ -386,8 +444,17 @@ internal sealed class AuraSkin : IOverlaySkin
         _chromeChipText.Foreground = buttonForeground;
         _gmailChipText.Foreground = buttonForeground;
 
+        _activityLabel.Foreground = new SolidColorBrush(palette.InkMute);
+        _conversationLabel.Foreground = new SolidColorBrush(palette.InkMute);
+        _typeInput.Background = new SolidColorBrush(palette.Glass);
+        _typeInput.BorderBrush = new SolidColorBrush(palette.GlassBorder);
+        _typeInput.Foreground = new SolidColorBrush(palette.Ink);
+        _typeInput.CaretBrush = new SolidColorBrush(AuraPalette.Accent);
+        _sendButton.Background = MakeAngledGradient(AuraPalette.Accent, AuraPalette.Accent2, 30);
+
         _face.ApplyPalette(palette);
         _transcript.SetRowFactory(BuildTranscriptRow);
+        _activityLog.SetRowFactory(BuildActivityRow);
     }
 
     // AURA's frosted card from the source mockup: a translucent, blurred-
@@ -428,6 +495,47 @@ internal sealed class AuraSkin : IOverlaySkin
             Margin = new Thickness(0, 0, 0, 8),
             Child = content,
         };
+    }
+
+    // A quieter cousin of BuildTranscriptRow's card - a single glass pill
+    // per step instead of a two-line tag+text card, since a tool-call
+    // trace doesn't carry the same "who said this" weight a conversation
+    // turn does. Literal terminal styling (see WEB) doesn't fit AURA's
+    // soft-glass identity.
+    private (Control Row, TextBlock? Dots) BuildActivityRow(ActivityEntry entry)
+    {
+        var dot = new Ellipse { Width = 6, Height = 6, Margin = new Thickness(0, 0, 8, 0), VerticalAlignment = VerticalAlignment.Center };
+        dot.Fill = entry.InProgress
+            ? MakeAngledGradient(AuraPalette.Accent, AuraPalette.Accent2, 30)
+            : new SolidColorBrush(_palette.InkMute);
+
+        var text = new TextBlock
+        {
+            Text = entry.Text,
+            Foreground = new SolidColorBrush(entry.InProgress ? _palette.Ink : _palette.InkMute),
+            FontSize = 13,
+            TextWrapping = TextWrapping.Wrap,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        TextBlock? dots = null;
+        var content = new StackPanel { Orientation = Orientation.Horizontal };
+        content.Children.Add(dot);
+        content.Children.Add(text);
+        if (entry.InProgress)
+        {
+            dots = new TextBlock { Foreground = new SolidColorBrush(_palette.Ink), FontSize = 13, VerticalAlignment = VerticalAlignment.Center };
+            content.Children.Add(dots);
+        }
+
+        var row = new Border
+        {
+            Background = new SolidColorBrush(_palette.Glass),
+            CornerRadius = new CornerRadius(12),
+            Padding = new Thickness(10, 6, 10, 6),
+            Margin = new Thickness(0, 0, 0, 6),
+            Child = content,
+        };
+        return (row, dots);
     }
 
     public void AttachActions(OverlaySkinActions actions) => _actions = actions;
