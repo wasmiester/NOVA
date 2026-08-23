@@ -150,6 +150,40 @@ internal sealed class NovaAssistant
     // guard against. Reset per task alongside _toolFailuresThisTask.
     private readonly Dictionary<string, bool> _gate2NeededAtDispatch = [];
 
+    // Exact-match cache of free (read-only) tool calls already made this
+    // task, keyed by name+input. Confirmed live: an identical search_email
+    // query ran twice back to back in the same task - a real ~25s
+    // round-trip repeated for zero new information. First version of this
+    // just returned the cached result blindly on any exact repeat - wrong,
+    // and a real inconsistency with an already-settled project principle
+    // (see docs/DESIGN_DECISIONS.md's self-contained-tools section): for a
+    // free API, a stale answer is a worse failure than the cost of a fresh
+    // call, so blind result caching was deliberately rejected once already,
+    // for exactly this reason (an ETA can be wrong seconds after it's
+    // cached if something changes). Reusing a cached result now goes
+    // through ToolCacheAdvisor - a real per-call judgment, not a blind
+    // rule, defaulting to a fresh call whenever there's genuine doubt.
+    // Scoped to ToolCatalog.FreeTools only (see the call site) - a write
+    // tool repeating the same call could be a legitimate second action,
+    // not a wasted duplicate. Reset per task alongside _toolFailuresThisTask.
+    private readonly Dictionary<string, (string Content, bool IsError, DateTime CachedAt)> _toolResultsThisTask = [];
+
+    // Counts calls to search_email/search_drive this task, regardless of
+    // query content or cache hits - a much cheaper signal than trying to
+    // detect "is this query narrow" semantically. The system prompt already
+    // says to combine several known lookups into one OR'd query rather than
+    // one call per item, but confirmed live: that guidance alone doesn't
+    // reliably survive a task that's already several rounds deep into a
+    // one-at-a-time rhythm (e.g. chasing down a handful of specific
+    // "still missing" items late in a task) - the same "prompt guidance
+    // loses to the shape of recent context" problem the already-called note
+    // above exists to fix for exact-duplicate calls. This is the same fix
+    // applied to a near-duplicate pattern: a hard-to-miss nudge injected at
+    // the exact moment the pattern is visible, not a rule to hope gets
+    // recalled from earlier in the system prompt. Reset per task alongside
+    // _toolFailuresThisTask.
+    private readonly Dictionary<string, int> _searchCallCountsThisTask = [];
+
     // Launches TerminalRelay/ as a child process - takes repoRoot, which is
     // composition-root territory, so Program.cs supplies this rather than
     // NovaAssistant needing to know about repo layout.
@@ -1923,26 +1957,74 @@ internal sealed class NovaAssistant
                     // she starts speaking (the overlay already hides it
                     // then) or the task ends.
                     Volatile.Write(ref _currentActivity, status);
-                    // Completion timing, not just start - the start-only
-                    // log couldn't distinguish "moved on immediately" from
-                    // "this exact call sat for two minutes," which is
-                    // exactly the ambiguity a live "hanging" report needed
-                    // resolved (long silent gaps in the console with no way
-                    // to tell which call was actually slow).
-                    var toolStopwatch = Stopwatch.StartNew();
-                    (string content, bool isError) = await ExecuteToolAsync(call.Name, call.Input, cts.Token);
-                    toolStopwatch.Stop();
-                    // Previously only logged *that* a call errored, not
-                    // what the error actually was - confirmed live as a
-                    // real diagnostic gap: two search_email calls errored
-                    // in one session and the console gave no way to tell
-                    // why without reproducing it. content already carries
-                    // the real message ("Tool error: {ex.Message}", see
-                    // ExecuteToolAsync) - just wasn't being surfaced here.
-                    StatusLog.WriteLine(isError
-                        ? $"[{status} - done in {toolStopwatch.ElapsedMilliseconds}ms, error: {content}]"
-                        : $"[{status} - done in {toolStopwatch.ElapsedMilliseconds}ms]");
+                    // See RecordActivity's own doc comment - a rolling
+                    // session-wide log (not cleared per task, same as
+                    // _transcript), so scrolling the overlay's activity
+                    // feed back covers what happened in earlier tasks too,
+                    // not just the one currently running.
+                    RecordActivity(ToolDescriptions.DescribeToolActivity(call));
+
+                    // Free tools only - see _toolResultsThisTask's own doc
+                    // comment for why a write tool can't safely share this
+                    // cache. A cache hit doesn't get reused blindly - see
+                    // ToolCacheAdvisor for why (a real judgment call, not a
+                    // rule, defaulting to a fresh call on any doubt).
+                    string? cacheKey = ToolCatalog.FreeTools.Contains(call.Name)
+                        ? $"{call.Name}:{JsonSerializer.Serialize(call.Input)}"
+                        : null;
+                    bool reusedFromCache = false;
+                    string reusedContent = "";
+                    bool reusedIsError = false;
+                    if (cacheKey is not null && _toolResultsThisTask.TryGetValue(cacheKey, out var cachedResult))
+                    {
+                        TimeSpan age = DateTime.UtcNow - cachedResult.CachedAt;
+                        if (await ToolCacheAdvisor.IsSafeToReuseAsync(_client, call.Name, JsonSerializer.Serialize(call.Input), age, cts.Token))
+                        {
+                            reusedFromCache = true;
+                            (reusedContent, reusedIsError, _) = cachedResult;
+                        }
+                    }
+
+                    string content;
+                    bool isError;
+                    if (reusedFromCache)
+                    {
+                        (content, isError) = (reusedContent, reusedIsError);
+                        StatusLog.WriteLine($"[{status} - reused from earlier this task]");
+                    }
+                    else
+                    {
+                        // Completion timing, not just start - the start-only
+                        // log couldn't distinguish "moved on immediately" from
+                        // "this exact call sat for two minutes," which is
+                        // exactly the ambiguity a live "hanging" report needed
+                        // resolved (long silent gaps in the console with no way
+                        // to tell which call was actually slow).
+                        var toolStopwatch = Stopwatch.StartNew();
+                        (content, isError) = await ExecuteToolAsync(call.Name, call.Input, cts.Token);
+                        toolStopwatch.Stop();
+                        // Previously only logged *that* a call errored, not
+                        // what the error actually was - confirmed live as a
+                        // real diagnostic gap: two search_email calls errored
+                        // in one session and the console gave no way to tell
+                        // why without reproducing it. content already carries
+                        // the real message ("Tool error: {ex.Message}", see
+                        // ExecuteToolAsync) - just wasn't being surfaced here.
+                        StatusLog.WriteLine(isError
+                            ? $"[{status} - done in {toolStopwatch.ElapsedMilliseconds}ms, error: {content}]"
+                            : $"[{status} - done in {toolStopwatch.ElapsedMilliseconds}ms]");
+                        if (cacheKey is not null && !isError)
+                        {
+                            _toolResultsThisTask[cacheKey] = (content, isError, DateTime.UtcNow);
+                        }
+                    }
+
                     results.Add(new ToolResultBlockParam(call.Id) { Content = content, IsError = isError });
+
+                    if (call.Name is "search_email" or "search_drive")
+                    {
+                        _searchCallCountsThisTask[call.Name] = _searchCallCountsThisTask.GetValueOrDefault(call.Name) + 1;
+                    }
                 }
 
                 // Safe checkpoint - between rounds, never mid-tool-call. If
@@ -1956,12 +2038,66 @@ internal sealed class NovaAssistant
                     results.Add(new TextBlockParam($"[The user just said, while you were working: \"{interjection}\"]"));
                 }
 
+                // See _pendingAmbientUpdates' own doc comment - rides
+                // along inside whatever's already running instead of
+                // competing for the mic. Mention briefly if there's a
+                // natural moment for it; otherwise it's fine to just keep
+                // going and let it come up when the task wraps up.
+                string? ambientUpdate = DrainPendingAmbientUpdates();
+                if (ambientUpdate is not null)
+                {
+                    results.Add(new TextBlockParam($"[An ambient update came in while you were working, not urgent: {ambientUpdate}]"));
+                }
+
+                // Confirmed live: an identical search_email call ran twice
+                // in one task, seconds apart - the full first result was
+                // already sitting in _conversation, so this wasn't missing
+                // information, it just wasn't salient enough to notice/use
+                // before reaching for another call. ToolCacheAdvisor is a
+                // safety net for when this still happens; this is the
+                // cheaper, more direct fix - an explicit, hard-to-miss
+                // reminder of what's already been tried, right where the
+                // next round's decision actually gets made, rather than
+                // something to notice buried in a longer transcript.
+                if (_toolResultsThisTask.Count > 0)
+                {
+                    string alreadyRun = string.Join(", ", _toolResultsThisTask.Keys);
+                    results.Add(new TextBlockParam($"[Already called this task, no need to repeat unless you have a specific reason to expect the result changed: {alreadyRun}]"));
+                }
+
+                // Confirmed live: even with the system prompt's own combine-
+                // into-one-OR'd-query guidance, a task several rounds deep
+                // into checking specific items one at a time (e.g. chasing
+                // down a handful of "still missing" companies late in a
+                // task) kept going one call per item rather than combining
+                // what was left - the guidance was there, just not salient
+                // against the shape of the last few rounds. Same fix as the
+                // already-called note above: put it back in front of her at
+                // the exact decision point instead of trusting it to be
+                // recalled from earlier in the prompt.
+                foreach ((string toolName, int count) in _searchCallCountsThisTask)
+                {
+                    if (count >= 3)
+                    {
+                        results.Add(new TextBlockParam(
+                            $"[You've made {count} separate {toolName} calls this task. If more than one specific " +
+                            "thing is still left to check, combine what's left into a single OR'd query instead of " +
+                            "continuing one at a time.]"));
+                    }
+                }
+
                 _conversation.Add(new MessageParam { Role = Role.User, Content = results });
             }
+
         }
         catch (OperationCanceledException)
         {
-            // Barge-in - a newer utterance already took over.
+            // Barge-in - a newer utterance already took over. The trigger
+            // itself (Interrupt() or DispatchUtterance's steal-branch) now
+            // logs when it fires - this catch staying silent is fine, the
+            // trace now exists further up instead of the task just
+            // vanishing with nothing on record anywhere.
+            StatusLog.WriteLine("[task ended - cancelled]");
         }
         catch (AnthropicApiException ex)
         {
