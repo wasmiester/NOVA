@@ -363,6 +363,25 @@ internal sealed class NovaAssistant
     // very first task, or one that archived with nothing worth summarizing).
     private string? _lastTaskSummary;
 
+    // The strategy memory (if any) StrategyRouter matched for the task
+    // currently in progress - set at task start, read and cleared at task
+    // end by ArchiveCompletedTaskAsync (via StrategyReflection) to decide
+    // whether the matched strategy should be reinforced, marked as a miss
+    // toward a rework, or left alone because it didn't actually fit. Null
+    // means either no strategy matched, or none was even looked up yet.
+    private (int Id, string Text)? _activeStrategy;
+
+    // Set by RunAssistantTurnAsync whenever a round ends up saying literally
+    // nothing (no text, no tool call) - the real stop_reason/output_tokens
+    // from that round's message-level delta, read by
+    // TryAnnounceSilentTaskEndAsync right after so the fallback it speaks
+    // can be specific when the API actually gave a specific reason (e.g.
+    // "refusal" - a real, meaningful signal, not a guess) instead of always
+    // falling back to the same generic wording. Cleared at the start of
+    // every round so a stale value from an earlier silent round can't leak
+    // into a later, unrelated one.
+    private string? _lastSilentRoundStopReason;
+
     // Gate 1: a task Nova has asked about but not yet been told to go ahead
     // with. Set when a turn needs an authorization; checked at the start of the
     // *next* turn instead of via a separate listening mode, so it reuses the
@@ -611,7 +630,7 @@ internal sealed class NovaAssistant
     // reset by the time either of those runs - the worst case is a task
     // isn't searchable later, never a stuck/growing conversation because
     // the network or disk had a bad moment.
-    private async Task ArchiveCompletedTaskAsync()
+    private async Task ArchiveCompletedTaskAsync(int roundCount)
     {
         string transcriptText;
         lock (_transcriptLock)
@@ -622,6 +641,8 @@ internal sealed class NovaAssistant
 
         DateTime startedAt = _taskStartedAtUtc;
         _taskStartedAtUtc = DateTime.UtcNow;
+        (int Id, string Text)? activeStrategy = _activeStrategy;
+        _activeStrategy = null;
         _conversation.Clear();
         // "3 failures in a row" is scoped to one task, not accumulated
         // across separate unrelated tasks - see _toolFailuresThisTask's
@@ -630,6 +651,8 @@ internal sealed class NovaAssistant
         _taskHasNavigatedBrowser = false;
         _gate2NeededAtDispatch.Clear();
         _taskIsAmbientInitiated = false;
+        _toolResultsThisTask.Clear();
+        _searchCallCountsThisTask.Clear();
 
         if (transcriptText.Length == 0)
         {
@@ -659,6 +682,91 @@ internal sealed class NovaAssistant
         catch (Exception ex)
         {
             ErrorLog.Log("ArchiveCompletedTaskAsync (save)", ex);
+        }
+
+        try
+        {
+            await ReflectOnStrategyAsync(transcriptText, roundCount, activeStrategy);
+        }
+        catch (Exception ex)
+        {
+            // Best-effort, same fail-safe reasoning as the summarize/save
+            // steps above - a reflection hiccup should never be visible as
+            // a task failure, just a missed learning opportunity.
+            ErrorLog.Log("ArchiveCompletedTaskAsync (reflect)", ex);
+        }
+    }
+
+    // See StrategyReflection's own doc comment for the full shape. Closes
+    // the loop StrategyRouter opens at task start: judges whether the
+    // approach actually taken was efficient, then creates, reinforces, or
+    // reworks a strategy memory as a result - automatic, not dependent on
+    // Claude remembering to save_memory about her own approach mid-task.
+    private async Task ReflectOnStrategyAsync(string transcriptText, int roundCount, (int Id, string Text)? activeStrategy)
+    {
+        StrategyReflection.Judgment judgment = await StrategyReflection.JudgeAsync(
+            _client, transcriptText, roundCount, activeStrategy is not null, CancellationToken.None);
+
+        switch (judgment)
+        {
+            case StrategyReflection.Judgment.Efficient when activeStrategy is { } used:
+                // Confirms the strategy is still pulling its weight -
+                // clears any prior misses rather than letting them linger
+                // toward a rework it no longer needs.
+                MemoryStore.ResetWeakCount(_memoryDbPath, used.Id);
+                return;
+
+            case StrategyReflection.Judgment.Efficient:
+                // No strategy was active and this went well - a real
+                // candidate for a new one. JudgeAsync's own round-count
+                // floor already filtered out anything too trivial to
+                // generalize from before this call even ran.
+                if (await StrategyReflection.WriteStrategyAsync(_client, transcriptText, CancellationToken.None) is { } newStrategy)
+                {
+                    StatusLog.WriteLine($"[strategy reflection: saving new strategy - {newStrategy}]");
+                    await MemoryStore.SaveContent(_memoryDbPath, _embeddingGenerator, newStrategy, "strategy");
+                }
+
+                return;
+
+            case StrategyReflection.Judgment.Inefficient when activeStrategy is { } weak:
+                // One or two misses don't condemn a strategy - a real
+                // one-off (an unusual edge case, a bad API day) shouldn't
+                // trigger a rework on its own. Reaching the threshold here,
+                // in code, means the model never has to track a running
+                // count itself - see StrategyReflection's own doc comment
+                // for why that's the more reliable split.
+                const int ReworkThreshold = 3;
+                int missCount = MemoryStore.IncrementWeakCount(_memoryDbPath, weak.Id);
+                if (missCount >= ReworkThreshold
+                    && await StrategyReflection.WriteStrategyAsync(_client, transcriptText, CancellationToken.None) is { } reworked)
+                {
+                    StatusLog.WriteLine($"[strategy reflection: reworking strategy after {missCount} inefficient uses - {reworked}]");
+                    await MemoryStore.UpdateStrategyContent(_memoryDbPath, _embeddingGenerator, weak.Id, reworked);
+                }
+
+                return;
+
+            case StrategyReflection.Judgment.Mismatched:
+                // The matched strategy didn't actually fit this task's
+                // real shape - not a reason to weaken or rework it (it may
+                // still be exactly right for the case it was written for),
+                // just a sign this task is a genuinely different shape
+                // worth its own strategy alongside the existing one.
+                if (await StrategyReflection.WriteStrategyAsync(_client, transcriptText, CancellationToken.None) is { } distinctStrategy)
+                {
+                    StatusLog.WriteLine($"[strategy reflection: saving distinct strategy (existing match didn't fit) - {distinctStrategy}]");
+                    await MemoryStore.SaveContent(_memoryDbPath, _embeddingGenerator, distinctStrategy, "strategy");
+                }
+
+                return;
+
+            default:
+                // Skip, or Inefficient/Mismatched with no active strategy
+                // to act on (shouldn't happen given the prompt's own
+                // framing, but nothing to learn from either way if it does)
+                // - do nothing.
+                return;
         }
     }
 
@@ -1705,17 +1813,61 @@ internal sealed class NovaAssistant
                 // other conversation that never needed it.
                 if (await StrategyRouter.FindRelevantStrategyAsync(_client, _memoryDbPath, input, cts.Token) is { } strategy)
                 {
-                    content = $"[A relevant lesson from a past task: {strategy}]\n\n{content}";
+                    // Silent otherwise - no console signal at all when a
+                    // match fires, which made this genuinely hard to
+                    // confirm was working versus just not being needed.
+                    StatusLog.WriteLine($"[strategy router matched: {strategy.Text}]");
+                    content = $"[A relevant lesson from a past task: {strategy.Text}]\n\n{content}";
+                    _activeStrategy = strategy;
+                }
+                else
+                {
+                    // No saved strategy applied - if this genuinely needs
+                    // multi-step work, plan the approach up front rather
+                    // than discovering it reactively round by round.
+                    // Confirmed live, repeatedly, as the actual cause of
+                    // excess rounds: one-at-a-time exploration, not "the
+                    // task is just big." Phrased as a conditional, not a
+                    // blanket instruction, so a genuinely trivial task
+                    // (a quick lookup, a direct answer) isn't forced
+                    // through a planning ritual it doesn't need - Claude's
+                    // own judgment on THIS task decides that, not a
+                    // separate classifier call spent on every task just to
+                    // gate a few sentences of text.
+                    content = "[No saved strategy exists for this shape of task yet. If it looks like it'll " +
+                        "need multiple steps across different sources, briefly plan your approach before " +
+                        "making tool calls, rather than discovering the next step only after seeing the " +
+                        "previous one's result. A quick, single-step task doesn't need this.]\n\n" + content;
+                    _activeStrategy = null;
                 }
 
                 _conversation.Add(new MessageParam { Role = Role.User, Content = content });
                 _lastTaskSummary = null;
             }
 
-            for (int round = 0; round < MaxToolRounds; round++)
+            // No upper bound on rounds - removed a fixed MaxToolRounds cap
+            // that was killing genuinely multi-part tasks (broad email
+            // scan, several reads, several writes) partway through,
+            // confirmed live as a real problem, not a hypothetical one.
+            // round/lastRoundReached still get tracked purely for
+            // observability (the per-round console line, the task-exit
+            // diagnostic) - nothing here relies on them to end the loop.
+            // The other anti-repetition mechanisms already in place
+            // (duplicate-call detection, the OR-query nudges,
+            // ToolCacheAdvisor) are what's actually supposed to prevent a
+            // genuine runaway, not an arbitrary round ceiling that
+            // couldn't tell "many steps because the task is big" apart
+            // from "many steps because something's actually wrong."
+            for (int round = 0; ; round++)
             {
+                lastRoundReached = round;
                 List<PendingToolCall> pendingToolCalls;
                 bool skipGate2Review = false;
+                // Defaults true for the callsToExecuteNow branch below -
+                // that's a Gate 2 resumption, a different path with its own
+                // already-spoken confirmation, not the "silent task death"
+                // shape the real value of this is checking for further down.
+                bool saidSomethingThisRound = true;
                 if (callsToExecuteNow is not null)
                 {
                     pendingToolCalls = callsToExecuteNow;

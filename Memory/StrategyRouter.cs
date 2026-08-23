@@ -26,9 +26,12 @@ namespace Nova;
 // extra context - never a reason to block or slow the task down further.
 internal static class StrategyRouter
 {
-    public static async Task<string?> FindRelevantStrategyAsync(AnthropicClient client, string memoryDbPath, string taskDescription, CancellationToken cancellationToken)
+    // Returns the matched memory's id alongside its text - StrategyReflection
+    // needs the id at task end to track weak_count/rework this exact
+    // strategy, not just quote its text into context.
+    public static async Task<(int Id, string Text)?> FindRelevantStrategyAsync(AnthropicClient client, string memoryDbPath, string taskDescription, CancellationToken cancellationToken)
     {
-        List<string> strategies = MemoryStore.GetByTag(memoryDbPath, "strategy");
+        List<(int Id, string Content)> strategies = MemoryStore.GetByTag(memoryDbPath, "strategy");
         if (strategies.Count == 0)
         {
             return null;
@@ -36,7 +39,7 @@ internal static class StrategyRouter
 
         try
         {
-            string numbered = string.Join("\n", strategies.Select((s, i) => $"{i + 1}. {s}"));
+            string numbered = string.Join("\n", strategies.Select((s, i) => $"{i + 1}. {s.Content}"));
             MessageCreateParams parameters = new()
             {
                 MaxTokens = 10,
