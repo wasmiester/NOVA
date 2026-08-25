@@ -15,14 +15,28 @@ internal static class OverlayLayout
     // minmax(0, 1.5fr); gap: 18px) - the conversation column is
     // deliberately 1.5x the activity column's width, not an even split, so
     // ActivityColumnWidth/ConversationColumnWidth below hold that same
-    // ratio: 180 and 270. Total: 18(margin) + 180 + 18(gap) + 270 +
-    // 18(margin) = 504. The window and the active skin's own root both
-    // resize to this together (see IOverlaySkin.IsMaximized) - explicit
-    // assignment, not SizeToContent.Width, which previously desynced the
-    // window's outer bounds from what actually rendered when content
-    // width changed at runtime (see AvaloniaOverlayWindow's own
-    // constructor comment on Width).
-    public const double MaximizedPanelWidth = 504;
+    // ratio: 180 and 270, plus the 18px gap = 468px the splitRow columns
+    // actually need.
+    //
+    // MaximizedPanelWidth is NOT simply 468 + a uniform 36px margin -
+    // confirmed live as a real bug: that assumption only holds for
+    // AuraSkin (_root has no border, _layout margin is 18 per side = 36
+    // total). WebSkin's _root has a 3px border AND innerBorder has a 2px
+    // border AND its margin is 16 (not 18) per side - 42px total chrome,
+    // 6px short of what the fixed columns need at 504. ArcSkin's _root has
+    // a 1px border on top of its 18px margin - 38px total, 2px short. 510
+    // is sized off WEB's 42px (the worst case, i.e. the most chrome around
+    // the content), so every skin's splitRow gets at least the 468px it
+    // needs - AURA and ARC end up with a few extra unused pixels of slack
+    // at the row's trailing edge instead, which is harmless.
+    //
+    // The window and the active skin's own root both resize to this
+    // together (see IOverlaySkin.IsMaximized) - explicit assignment, not
+    // SizeToContent.Width, which previously desynced the window's outer
+    // bounds from what actually rendered when content width changed at
+    // runtime (see AvaloniaOverlayWindow's own constructor comment on
+    // Width).
+    public const double MaximizedPanelWidth = 510;
     public const double ActivityColumnWidth = 180;
     public const double ConversationColumnWidth = 270;
     public const double ColumnGap = 18;

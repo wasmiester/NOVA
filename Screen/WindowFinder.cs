@@ -70,17 +70,15 @@ internal static class WindowFinder
     // only meant to be called from a simulated-input fallback path (real
     // mouse clicks/keystrokes need actual OS focus and on-screen
     // coordinates, unlike UI Automation's Invoke/Value patterns), not as a
-    // default step for every interaction.
-    public static void BringToForeground(IntPtr hwnd)
-    {
-        const int swRestore = 9;
-        if (IsIconic(hwnd))
-        {
-            ShowWindow(hwnd, swRestore);
-        }
-
-        SetForegroundWindow(hwnd);
-    }
+    // default step for every interaction. Delegates to WindowActivator's
+    // own AttachThreadInput-guarded implementation rather than a plain
+    // SetForegroundWindow - confirmed live as a real bug: Windows'
+    // foreground-lock prevention silently ignores an unguarded
+    // SetForegroundWindow call from a background process (see
+    // WindowActivator's own doc comment), so a click/keystroke fallback
+    // that needed this to actually focus the target window was silently
+    // landing on whatever window still had real focus instead.
+    public static void BringToForeground(IntPtr hwnd) => WindowActivator.BringToFront(hwnd);
 
     private delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
 
@@ -95,13 +93,4 @@ internal static class WindowFinder
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     private static extern int GetWindowText(IntPtr hWnd, StringBuilder lpString, int nMaxCount);
-
-    [DllImport("user32.dll")]
-    private static extern bool IsIconic(IntPtr hWnd);
-
-    [DllImport("user32.dll")]
-    private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
-
-    [DllImport("user32.dll")]
-    private static extern bool SetForegroundWindow(IntPtr hWnd);
 }

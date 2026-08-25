@@ -73,6 +73,13 @@ internal static class ToolDescriptions
             "build_tool" => $"build a \"{ToolInput.GetString(call.Input, "name") ?? "new"}\" tool - {ToolInput.GetString(call.Input, "description") ?? "a new capability"}" +
                 ((ToolInput.GetBool(call.Input, "uses_paid_api") ?? false) ? " (this one uses a paid API)" : ""),
             "run_tool" => $"run the \"{ToolInput.GetString(call.Input, "name") ?? ""}\" tool",
+            // Confirmed live as a real gap: these two fell through to the
+            // generic "use {call.Name}" default below, unlike every other
+            // gated tool - an ambient-initiated task with either in its
+            // gatedCalls used to speak the raw internal tool name instead
+            // of what's actually about to happen.
+            "send_email" => $"send an email to {ToolInput.GetString(call.Input, "to") ?? "someone"} with the subject \"{ToolInput.GetString(call.Input, "subject") ?? "no subject"}\"",
+            "delete_path" => $"delete {ToolInput.GetString(call.Input, "path") ?? "a file or folder"}",
             _ => $"use {call.Name}",
         });
 
@@ -87,7 +94,14 @@ internal static class ToolDescriptions
     private static string DescribeEditFile(PendingToolCall call)
     {
         string path = ToolInput.GetString(call.Input, "path") ?? "a file";
-        return File.Exists(path) ? $"edit {path}" : $"create {path}";
+        // FileTools.ExpandPath, not a raw File.Exists on the literal string -
+        // confirmed live as a real bug: a %USERPROFILE%-style path always
+        // read as not-found here (ExpandPath is applied everywhere else
+        // this same create-vs-edit check happens), so overwriting a real
+        // existing file at an env-var path got announced at Gate 1 as a
+        // "create" instead of an "edit" - the spoken authorization actively
+        // misled about what was about to happen.
+        return File.Exists(FileTools.ExpandPath(path)) ? $"edit {path}" : $"create {path}";
     }
 
     // Shared by DescribeGate2Review (spoken) and DescribeGate2Action (the

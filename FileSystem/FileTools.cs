@@ -24,7 +24,7 @@ internal static class FileTools
         // literally, so without this a path like "%USERPROFILE%\Downloads"
         // would look for a folder literally named "%USERPROFILE%" and
         // always come back not-found.
-        string path = Environment.ExpandEnvironmentVariables(input["path"].GetString()!);
+        string path = ExpandPath(input["path"].GetString()!);
         string pattern = ToolInput.GetString(input, "pattern") ?? "*";
         bool recursive = ToolInput.GetBool(input, "recursive") ?? false;
 
@@ -207,5 +207,8 @@ internal static class FileTools
     // took its path literally, which could silently read/write/revert the
     // wrong location (or report "not found" for a file that does exist)
     // whenever a %VAR%-style path was used anywhere but list_files.
-    private static string ExpandPath(string path) => Environment.ExpandEnvironmentVariables(path);
+    // Internal, not private - shared with ToolDescriptions.DescribeEditFile,
+    // which needs the exact same expansion before its own File.Exists check
+    // (see that method's own comment for the bug this fixes).
+    internal static string ExpandPath(string path) => Environment.ExpandEnvironmentVariables(path);
 }

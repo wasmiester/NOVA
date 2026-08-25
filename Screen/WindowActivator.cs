@@ -48,7 +48,20 @@ internal static class WindowActivator
     [DllImport("user32.dll")]
     private static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
 
-    public static void BringToFrontMaximized(IntPtr hWnd)
+    public static void BringToFrontMaximized(IntPtr hWnd) => BringToFront(hWnd, maximize: true);
+
+    // Restores a minimized window and brings it to the foreground without
+    // forcibly maximizing it - for callers (like WindowFinder's simulated-
+    // input click/keystroke fallback) that just need real OS focus at the
+    // window's current size/position, not a layout change. Shares the same
+    // AttachThreadInput workaround as BringToFrontMaximized - confirmed
+    // live as a real gap: a separate, weaker implementation elsewhere
+    // (plain SetForegroundWindow, no thread-attach) silently did nothing on
+    // a background process, exactly the failure this file's own doc
+    // comment already explains.
+    public static void BringToFront(IntPtr hWnd) => BringToFront(hWnd, maximize: false);
+
+    private static void BringToFront(IntPtr hWnd, bool maximize)
     {
         if (hWnd == IntPtr.Zero)
         {
@@ -73,7 +86,11 @@ internal static class WindowActivator
                 ShowWindow(hWnd, SwRestore);
             }
 
-            ShowWindow(hWnd, SwMaximize);
+            if (maximize)
+            {
+                ShowWindow(hWnd, SwMaximize);
+            }
+
             SetForegroundWindow(hWnd);
         }
         finally
