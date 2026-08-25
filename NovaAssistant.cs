@@ -1776,6 +1776,10 @@ internal sealed class NovaAssistant
                     ? $"Still working - {activity}."
                     : "Still working on this - not stuck, just taking a bit.";
                 StatusLog.WriteLine($"Nova: {text}");
+                // Same gap as SpeakLocalReplyAsync's own fix - spoken and
+                // console-logged, but never recorded into the transcript
+                // the overlay actually reads from.
+                RecordTranscript(isUser: false, text);
                 await SpeakAndWaitAsync(text, linked.Token);
             }
         }
@@ -1803,6 +1807,14 @@ internal sealed class NovaAssistant
         // made a fix impossible to confirm from a log alone whether it
         // actually ran or not.
         StatusLog.WriteLine($"Nova: {text}");
+        // Same reasoning, the overlay's own transcript instead of the
+        // console - confirmed live as a second, separate gap: every reply
+        // that goes through here was spoken aloud and logged to the
+        // console, but never actually recorded into the transcript
+        // SnapshotTranscript hands to the overlay, so the console and the
+        // UI chat panel showed genuinely different histories of what Nova
+        // had actually said.
+        RecordTranscript(isUser: false, text);
         var cts = new CancellationTokenSource();
         _turnCts = cts;
         try
