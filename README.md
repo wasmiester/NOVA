@@ -4,6 +4,8 @@ Nova is a voice-first desktop assistant for Windows, built on Claude. The idea s
 
 You talk to it, it talks back — fully local speech-to-text and text-to-speech, so nothing you say leaves your machine unless a task actually needs the internet. It reads native apps and the browser through Windows UI Automation and Playwright rather than screenshots, so it's reading structured data, not guessing from pixels. It keeps a real memory across restarts (and gets smarter about *how* it remembers things, not just that it does). And it can write, compile, and run its own small tools at runtime when it hits something it doesn't have a tool for yet, with a self-repair loop if one of those tools starts misbehaving.
 
+Fully adopting Claude Code as an agentic collaborator in my workflow to build this taught me more than I expected I drove every design decision and did all the QA, testing and implementation. Claude Code handled the raw coding.
+
 ### A few things I'm actually proud of
 
 **The permission model.** My first pass at "ask before doing anything risky" ended up asking three separate times for one task — can I read this, can I edit this, can I send this — which felt like filling out a form, not talking to an assistant. It's down to two checkpoints now: one spoken authorization that only fires when Nova brings something up on her own (not when you directly ask for it — you already gave permission by asking), and one stricter, click-only popup review that fires for anything genuinely irreversible, no matter how the task started. A direct request like "fix the typos in this email and send it" now runs with zero interruption right up until the actual send, where you get one real look at what's about to go out.
