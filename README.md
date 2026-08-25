@@ -1,6 +1,6 @@
-# Nova
+# Nova - In Progress
 
-Nova is a voice-first desktop assistant for Windows, built on Claude. The idea started with E.V. from *Spider-Man: Brand New Day* — an AI that doesn't just answer when spoken to, but notices what you're doing and offers to help. I wanted to see how much of that was actually buildable with what's available today, not just as a chatbot with a microphone bolted on, but something that watches your screen, acts on real apps, and remembers you from one session to the next.
+Nova is a voice-first desktop assistant for Windows, built on Claude. The idea started with E.V. from *Spider-Man: Brand New Day* — an AI that doesn't just answer when spoken to, but notices what you're doing and offers to help. I wanted to see how much of that was actually buildable with what's available today, not just as a chatbot with a microphone bolted on, but something that watches your screen, acts on real apps, evolves over time and remembers you from one session to the next.
 
 You talk to it, it talks back — fully local speech-to-text and text-to-speech, so nothing you say leaves your machine unless a task actually needs the internet. It reads native apps and the browser through Windows UI Automation and Playwright rather than screenshots, so it's reading structured data, not guessing from pixels. It keeps a real memory across restarts (and gets smarter about *how* it remembers things, not just that it does). And it can write, compile, and run its own small tools at runtime when it hits something it doesn't have a tool for yet, with a self-repair loop if one of those tools starts misbehaving.
 
@@ -14,7 +14,21 @@ You talk to it, it talks back — fully local speech-to-text and text-to-speech,
 
 Full write-up of how all this fits together: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). Things I tried and specifically didn't do, and why: [docs/DESIGN_DECISIONS.md](docs/DESIGN_DECISIONS.md).
 
-## The overlay
+## Tools and strategy
+
+Nova's built-in **tools** cover the ground you'd expect a screen/browser-aware assistant to cover:
+
+- **Files** — read, list, edit (with full undo history via `revert_file_edit`), delete
+- **Shell and desktop** — run terminal commands, launch/open paths, read the screen via UI Automation, click/type/scroll into native apps, watch a terminal window for build/test output worth mentioning
+- **Browser** — navigate, read the page, fill/select/check form fields, upload files, click (restricted to navigational actions only — see the permission model below)
+- **Memory** — save and search durable facts about you, search past conversations
+- **Google Workspace** (optional) — Gmail, Calendar, Docs, Drive, Sheets, Slides
+- **Self-building** — write, compile, and run her own new tools at runtime for a capability she doesn't already have (see "Self-repair" above)
+- **Diagnostics** — recent error log, runtime settings
+
+Beyond calling tools, Nova also learns *how* to approach a task, not just facts about you. This is **strategy** — the project's own name for a small case-based reasoning (CBR) system: at the start of a task, `StrategyRouter` checks whether a previously-saved approach applies, using an LLM judgment call rather than embedding similarity alone, since a genuinely general lesson ("pull broad instead of guessing narrow keywords") often shares no vocabulary with a new, differently-worded task it should still apply to. At the end, `StrategyReflection` judges whether the approach actually taken was efficient, and reinforces a strategy that's still pulling its weight, saves a new one when a strategy-free task went well, or reworks one after three underperforming uses in a row — a case-based memory of *approaches*, updated the same way it's retrieved: by outcome, not just by recall.
+
+## The Overlay
 
 Nova runs as a small floating overlay rather than a console window, with three interchangeable skins — same live state (listening, speaking, asleep, what she's currently doing), three completely different looks. Cycle between them anytime with the switcher button.
 
@@ -23,8 +37,18 @@ Nova runs as a small floating overlay rather than a console window, with three i
 | ![ARC skin](docs/arc.png) | ![WEB skin](docs/web.png) | ![AURA skin](docs/aura.png) |
 | Hologram-globe HUD, cyan theme | Retro pixel-art tracker | Soft pastel companion |
 
-## What's next
+Each skin also has three sizes, same state carried across all of them:
 
+| | ARC | WEB | AURA |
+|---|---|---|---|
+| **Pill** — collapsed, just enough to see she's listening | ![ARC pill](docs/arc-pill.png) | ![WEB pill](docs/web-pill.png) | ![AURA pill](docs/aura-pill.png) |
+| **Minimized** — current activity, comfort-level toggle | ![ARC minimized](docs/arc.png) | ![WEB minimized](docs/web.png) | ![AURA minimized](docs/aura.png) |
+| **Maximized** — full conversation transcript alongside a running activity log | ![ARC maximized](docs/arc-max.png) | ![WEB maximized](docs/web-max.png) | ![AURA maximized](docs/aura-max.png) |
+
+A single click collapses straight back down to the pill from either size.
+
+## What's next
+- Local LLM support, as an alternative to the Claude API — mostly a cost question rather than a time one; the reasoning core needs a model genuinely capable of long agentic tool-use loops, and the local options at that bar are still heavier/pricier (hardware-wise) than paying per-call
 - Full UI customization — position, theming, layout, beyond just the three built-in skins
 - Figma and Blender integrations, built the same way as any other self-contained tool, driving each app's own scripting API rather than generating content from scratch
 - Proactive inbox push-watching instead of polling
