@@ -35,9 +35,10 @@ internal sealed class WebSkin : IOverlaySkin
     private readonly TranscriptPanel _transcript;
     private readonly ActivityLogPanel _activityLog;
     private readonly Grid _layout;
-    private readonly Button _pill;
+    private readonly Border _pill;
     private readonly Border _pillDot;
     private readonly TextBlock _pillText;
+    private readonly TextBlock _pillDragHandle;
     private OverlaySkinActions? _actions;
     private ActivationMode _mode = ActivationMode.Prompted;
     private bool _engaged = true;
@@ -357,14 +358,28 @@ internal sealed class WebSkin : IOverlaySkin
             TextTrimming = TextTrimming.CharacterEllipsis,
         };
         var pillChevron = new TextBlock { Text = "▾", Foreground = TextBrush, FontFamily = WebFont, FontSize = 11, VerticalAlignment = VerticalAlignment.Center };
-        var pillInner = new Grid { ColumnDefinitions = new ColumnDefinitions("Auto,*,Auto") };
-        Grid.SetColumn(_pillDot, 0);
-        Grid.SetColumn(_pillText, 1);
-        Grid.SetColumn(pillChevron, 2);
+        // A small, dedicated drag handle - see IOverlaySkin.PillDragHandle's
+        // own doc comment for why the rest of the pill deliberately isn't
+        // one too. "⋮⋮" is the same grip idiom drag-to-reorder lists already
+        // use elsewhere (Trello/Notion/Slack) - immediately recognizable as
+        // "grab here," distinct from the dot/text/chevron cluster that
+        // reads as clickable content.
+        _pillDragHandle = new TextBlock { Text = "⋮⋮", Foreground = TextBrush, FontFamily = WebFont, FontSize = 11, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 10, 0), Cursor = new Cursor(StandardCursorType.SizeAll) };
+        var pillInner = new Grid { ColumnDefinitions = new ColumnDefinitions("Auto,Auto,*,Auto") };
+        Grid.SetColumn(_pillDragHandle, 0);
+        Grid.SetColumn(_pillDot, 1);
+        Grid.SetColumn(_pillText, 2);
+        Grid.SetColumn(pillChevron, 3);
+        pillInner.Children.Add(_pillDragHandle);
         pillInner.Children.Add(_pillDot);
         pillInner.Children.Add(_pillText);
         pillInner.Children.Add(pillChevron);
-        _pill = new Button
+        // Border, not Button - see IOverlaySkin.Pill's own doc comment for
+        // why: this needs to be both a drag handle and a click target,
+        // which a single Button can't do at once. Click-to-expand is
+        // resolved by AvaloniaOverlayWindow itself (see its
+        // OnWindowPointerPressed), not wired here.
+        _pill = new Border
         {
             Background = Brushes.Transparent,
             BorderThickness = new Thickness(0),
@@ -372,11 +387,9 @@ internal sealed class WebSkin : IOverlaySkin
             Height = 56,
             HorizontalAlignment = HorizontalAlignment.Stretch,
             Cursor = new Cursor(StandardCursorType.Hand),
-            Content = pillInner,
+            Child = pillInner,
             IsVisible = false,
         };
-        FlatButtonStyle.Apply(_pill, cornerRadius: 0, stretchContent: true);
-        _pill.Click += (_, _) => SetCollapsed(false);
 
         var bodyOrPill = new Grid();
         bodyOrPill.Children.Add(_layout);
@@ -541,6 +554,10 @@ internal sealed class WebSkin : IOverlaySkin
     }
 
     public bool IsCollapsed => _pill.IsVisible;
+
+    public Control Pill => _pill;
+
+    public Control PillDragHandle => _pillDragHandle;
 
     public bool IsMaximized => _transcript.IsVisible;
 

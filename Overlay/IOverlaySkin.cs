@@ -67,6 +67,30 @@ internal interface IOverlaySkin
     // nothing else ever touched.
     void SetCollapsed(bool collapsed);
 
+    // The collapsed-pill element itself - needs to be both a drag handle
+    // (AvaloniaOverlayWindow's own window-move logic) and a click target
+    // (click to expand), which a plain Button can't do at once (see
+    // AvaloniaOverlayWindow.OnWindowPointerPressed's own comment on why).
+    // Exposed so the window can tell "did this press land on the pill" and
+    // resolve a stationary press-release as a click itself, rather than
+    // each skin trying to detect that independently against a gesture the
+    // window's own BeginMoveDrag call has already taken over.
+    Control Pill { get; }
+
+    // A dedicated small drag-handle within the pill, distinct from the rest
+    // of its clickable surface - lets AvaloniaOverlayWindow treat a press
+    // there as an unconditional drag and everywhere else on the pill as an
+    // unconditional click, with no runtime click-vs-drag guessing needed on
+    // either. Confirmed live as a real gap in the single-region approach
+    // this replaces: BeginMoveDrag blocks and takes over the pointer at the
+    // OS level for the whole gesture, so comparing window position
+    // before/after it returns could tell "was this a drag" but a
+    // PointerReleased handler wired on the pill itself never reliably fired
+    // to resolve the click side. Default null (not yet split out) falls
+    // back to that same before/after comparison in the window - skins can
+    // adopt a dedicated handle incrementally rather than all at once.
+    Control? PillDragHandle => null;
+
     void SetMaximized(bool maximized);
 
     // Per-skin visual parameters for the shared Gate 2 confirmation popup

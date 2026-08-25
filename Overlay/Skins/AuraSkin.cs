@@ -38,10 +38,11 @@ internal sealed class AuraSkin : IOverlaySkin
     private readonly TextBlock _chromeChipText;
     private readonly TextBlock _gmailChipText;
     private readonly Grid _layout;
-    private readonly Button _pill;
+    private readonly Border _pill;
     private readonly Border _pillDot;
     private readonly TextBlock _pillText;
     private readonly TextBlock _pillChevron;
+    private readonly TextBlock _pillDragHandle;
     private OverlaySkinActions? _actions;
     private ActivationMode _mode = ActivationMode.Prompted;
     private bool _engaged = true;
@@ -354,10 +355,21 @@ internal sealed class AuraSkin : IOverlaySkin
             TextTrimming = TextTrimming.CharacterEllipsis,
         };
         _pillChevron = new TextBlock { Text = "▾", FontSize = 11, VerticalAlignment = VerticalAlignment.Center };
-        var pillInner = new Grid { ColumnDefinitions = new ColumnDefinitions("Auto,*,Auto"), Margin = new Thickness(4, 0, 4, 0) };
-        Grid.SetColumn(_pillDot, 0);
-        Grid.SetColumn(_pillText, 1);
-        Grid.SetColumn(_pillChevron, 2);
+        // A small, dedicated drag handle - see IOverlaySkin.PillDragHandle's
+        // own doc comment for why the rest of the pill deliberately isn't
+        // one too. "⋮⋮" is the same grip idiom drag-to-reorder lists already
+        // use elsewhere (Trello/Notion/Slack) - immediately recognizable as
+        // "grab here," distinct from the dot/text/chevron cluster that
+        // reads as clickable content. Foreground set in ApplyPalette below,
+        // same as _pillChevron - not hardcoded here since it tracks AURA's
+        // live light/dark theme toggle.
+        _pillDragHandle = new TextBlock { Text = "⋮⋮", FontSize = 11, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 10, 0), Cursor = new Cursor(StandardCursorType.SizeAll) };
+        var pillInner = new Grid { ColumnDefinitions = new ColumnDefinitions("Auto,Auto,*,Auto"), Margin = new Thickness(4, 0, 4, 0) };
+        Grid.SetColumn(_pillDragHandle, 0);
+        Grid.SetColumn(_pillDot, 1);
+        Grid.SetColumn(_pillText, 2);
+        Grid.SetColumn(_pillChevron, 3);
+        pillInner.Children.Add(_pillDragHandle);
         pillInner.Children.Add(_pillDot);
         pillInner.Children.Add(_pillText);
         pillInner.Children.Add(_pillChevron);
@@ -368,7 +380,12 @@ internal sealed class AuraSkin : IOverlaySkin
         // snug pill. 44 (cornerRadius halved to match, keeping the full
         // capsule roundness) leaves just enough breathing room around the
         // now-larger, bolder text above.
-        _pill = new Button
+        // Border, not Button - see IOverlaySkin.Pill's own doc comment for
+        // why: this needs to be both a drag handle and a click target,
+        // which a single Button can't do at once. Click-to-expand is
+        // resolved by AvaloniaOverlayWindow itself (see its
+        // OnWindowPointerPressed), not wired here.
+        _pill = new Border
         {
             Background = Brushes.Transparent,
             BorderThickness = new Thickness(0),
@@ -377,11 +394,9 @@ internal sealed class AuraSkin : IOverlaySkin
             Margin = new Thickness(18),
             HorizontalAlignment = HorizontalAlignment.Stretch,
             Cursor = new Cursor(StandardCursorType.Hand),
-            Content = pillInner,
+            Child = pillInner,
             IsVisible = false,
         };
-        FlatButtonStyle.Apply(_pill, cornerRadius: 22, stretchContent: true);
-        _pill.Click += (_, _) => SetCollapsed(false);
 
         var bodyOrPill = new Grid();
         bodyOrPill.Children.Add(_layout);
@@ -555,6 +570,7 @@ internal sealed class AuraSkin : IOverlaySkin
         _activityLogBox.BorderBrush = new SolidColorBrush(palette.GlassBorder);
         _pillText.Foreground = new SolidColorBrush(palette.Ink);
         _pillChevron.Foreground = new SolidColorBrush(palette.InkMute);
+        _pillDragHandle.Foreground = new SolidColorBrush(palette.InkMute);
         _typeInput.Background = new SolidColorBrush(palette.Glass);
         _typeInput.BorderBrush = new SolidColorBrush(palette.GlassBorder);
         _typeInput.Foreground = new SolidColorBrush(palette.Ink);
@@ -669,6 +685,10 @@ internal sealed class AuraSkin : IOverlaySkin
     }
 
     public bool IsCollapsed => _pill.IsVisible;
+
+    public Control Pill => _pill;
+
+    public Control PillDragHandle => _pillDragHandle;
 
     public bool IsMaximized => _transcript.IsVisible;
 

@@ -389,10 +389,67 @@ internal sealed class AvaloniaOverlayWindow : Window
             return;
         }
 
+        // The collapsed pill is a plain Border, not a Button (see
+        // IOverlaySkin.Pill's own doc comment) - it needs to be both a drag
+        // handle and a click target, which no single Button can do at once.
+        IOverlaySkin activeSkin = _skins[_activeIndex];
+        Control pill = activeSkin.Pill;
+        Control? dragHandle = activeSkin.PillDragHandle;
+        bool pressedPill = e.Source is Visual pillSource && IsWithin(pillSource, pill);
+
+        if (dragHandle is not null)
+        {
+            // A skin with a dedicated drag handle (see PillDragHandle's own
+            // doc comment): anywhere else on the pill is a pure click, never
+            // a drag attempt at all, so there's no risk of BeginMoveDrag's
+            // OS-level pointer takeover ever swallowing it.
+            bool pressedHandle = e.Source is Visual handleSource && IsWithin(handleSource, dragHandle);
+            if (pressedPill && !pressedHandle)
+            {
+                activeSkin.SetCollapsed(false);
+                return;
+            }
+        }
+
+        // BeginMoveDrag blocks until the gesture actually ends, so once it
+        // returns, comparing Position before/after tells us whether this
+        // resolved as a real drag or a stationary press-release - the
+        // fallback for a skin with no dedicated drag handle yet (a
+        // stationary click that landed on the pill still needs to resolve
+        // as "expand" ourselves, since a plain Border has no Click event of
+        // its own). Confirmed live as a real regression from the pill's
+        // earlier Button-based design: a PointerReleased handler wired
+        // directly on the pill never actually fired, since BeginMoveDrag's
+        // own OS-level takeover of the gesture appears to swallow it
+        // regardless of whether real movement happened - hence the
+        // dedicated-handle path above instead, for skins that have adopted it.
+        PixelPoint positionBeforeDrag = Position;
+
         BeginMoveDrag(e);
         _restingTop = Position.Y; // a deliberate drag always becomes the new resting spot
         _anchoredRightPhysical = Position.X + (int)(Width * _scaling);
         SaveState();
+
+        if (dragHandle is null && pressedPill && Position == positionBeforeDrag)
+        {
+            activeSkin.SetCollapsed(false);
+        }
+    }
+
+    private static bool IsWithin(Visual source, Control target)
+    {
+        Visual? current = source;
+        while (current is not null)
+        {
+            if (ReferenceEquals(current, target))
+            {
+                return true;
+            }
+
+            current = current.GetVisualParent();
+        }
+
+        return false;
     }
 
     private static Button? FindAncestorButton(Visual source)
