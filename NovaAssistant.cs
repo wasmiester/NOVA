@@ -533,10 +533,13 @@ internal sealed class NovaAssistant
 
     // For the overlay's "CHROME LINKED"/"GMAIL LINKED" status chips.
     // ChromeLinked reflects a real, live connection state (flips back off
-    // if the user closes the debug Chrome window); GmailLinked can now
-    // also flip from false to true mid-run (see ConnectGoogleAccountAsync/
-    // CredentialsPopup), though never back to false again - there's no
-    // in-app disconnect, only ever a live connect.
+    // if the user closes the debug Chrome window); GmailLinked can flip
+    // from false to true mid-run (see ConnectGoogleAccountAsync/
+    // CredentialsPopup), and back to false again too - not from an
+    // in-app disconnect (there still isn't one), but ExecuteToolAsync's
+    // Google-auth-failure handler nulls out _gmail (along with every
+    // other Google client) if the token is later revoked/expired, so the
+    // chip can go dark again until the popup reconnects it.
     internal bool ChromeLinked => _browser.IsConnected;
 
     internal bool GmailLinked => _gmail is not null;
@@ -607,16 +610,37 @@ internal sealed class NovaAssistant
     {
         lock (_activityLock)
         {
-            if (_activityHistory.Count > 0 && _activityHistory[^1].InProgress)
-            {
-                _activityHistory[^1] = _activityHistory[^1] with { InProgress = false };
-            }
-
+            FinishLastActivityLocked();
             _activityHistory.Add(new ActivityEntry(text, InProgress: true));
             if (_activityHistory.Count > MaxActivityEntries)
             {
                 _activityHistory.RemoveAt(0);
             }
+        }
+    }
+
+    // Confirmed live as a real gap: RecordActivity only ever settled the
+    // previous entry as a side effect of a *new* one starting, so the very
+    // last activity of a task that finishes cleanly (or gets interrupted)
+    // never had anything left to trigger that settling - it stayed
+    // InProgress forever, and with it the overlay's animated "..." dots
+    // (ActivityLogPanel only re-picks its active-dots row when the entry
+    // *count* changes, which an in-place InProgress flip alone doesn't
+    // trigger either). Called wherever a task's activity-driven work
+    // actually stops, not just from RecordActivity's own next-entry path.
+    private void FinishLastActivity()
+    {
+        lock (_activityLock)
+        {
+            FinishLastActivityLocked();
+        }
+    }
+
+    private void FinishLastActivityLocked()
+    {
+        if (_activityHistory.Count > 0 && _activityHistory[^1].InProgress)
+        {
+            _activityHistory[^1] = _activityHistory[^1] with { InProgress = false };
         }
     }
 
@@ -767,10 +791,11 @@ internal sealed class NovaAssistant
                 return;
 
             default:
-                // Skip, or Inefficient/Mismatched with no active strategy
-                // to act on (shouldn't happen given the prompt's own
-                // framing, but nothing to learn from either way if it does)
-                // - do nothing.
+                // Skip, or Inefficient with no active strategy to act on
+                // (shouldn't happen given the prompt's own framing, but
+                // nothing to learn from either way if it does) - do nothing.
+                // Mismatched isn't reachable here regardless of
+                // activeStrategy - its own case above always fires first.
                 return;
         }
     }
@@ -844,6 +869,7 @@ internal sealed class NovaAssistant
         Volatile.Write(ref _novaSpeaking, 0);
         Volatile.Write(ref _isBusy, 0);
         Volatile.Write(ref _currentActivity, null);
+        FinishLastActivity();
         // A full interrupt starts a brand new turn - any interjection still
         // sitting in the queue was meant for the task that's now being cut
         // off, not whatever comes next, so it's superseded rather than
@@ -879,14 +905,24 @@ internal sealed class NovaAssistant
             // Same diagnostic gap as Interrupt() above - this branch silently
             // cancels whatever task was still running with no console trace
             // of it ever having happened.
-            StatusLog.WriteLine("[a new utterance arrived while still busy - cancelling the previous task]");
-            _tts.StopPlayback();
-            _turnCts?.Cancel();
-            Volatile.Write(ref _novaSpeaking, 0);
-            Volatile.Write(ref _currentActivity, null);
+            CancelStolenTask("[a new utterance arrived while still busy - cancelling the previous task]");
         }
 
         _ = ProcessUtteranceAsync(samples);
+    }
+
+    // Shared by every "steal busy" branch that finds the Interlocked.Exchange
+    // above already claimed by another task and needs to tear it down the
+    // same way Interrupt() does - just without touching _isBusy itself,
+    // since the caller just claimed that slot for its own new task.
+    private void CancelStolenTask(string logMessage)
+    {
+        StatusLog.WriteLine(logMessage);
+        _tts.StopPlayback();
+        _turnCts?.Cancel();
+        Volatile.Write(ref _novaSpeaking, 0);
+        Volatile.Write(ref _currentActivity, null);
+        FinishLastActivity();
     }
 
     // Called by AudioCapturePipeline when speech is captured while a task is
@@ -946,10 +982,7 @@ internal sealed class NovaAssistant
                 // the same race-proof handoff, not an assumption.
                 if (Interlocked.Exchange(ref _isBusy, 1) != 0)
                 {
-                    _tts.StopPlayback();
-                    _turnCts?.Cancel();
-                    Volatile.Write(ref _novaSpeaking, 0);
-                    Volatile.Write(ref _currentActivity, null);
+                    CancelStolenTask("[an interjection reroute arrived while still busy - cancelling the previous task]");
                 }
 
                 while (_pendingInterjections.TryDequeue(out _))
@@ -1060,7 +1093,14 @@ internal sealed class NovaAssistant
     // no-ops rather than confusing that flow.
     public void TriggerReadyAcknowledgment()
     {
-        if (IsBusy || _pendingAuthorization is not null)
+        // Confirmed live as a real bug: this guard was missing
+        // _pendingGate2Review, unlike TriggerTerminalSuggestion's own
+        // identical check - a wake-up landing while an irreversible action
+        // is still awaiting its click-only review would dispatch through
+        // ProcessTextInputAsync below, which silently auto-declines the
+        // still-open review using this method's own synthetic text as if
+        // it were the user's answer.
+        if (IsBusy || _pendingAuthorization is not null || _pendingGate2Review is not null)
         {
             StatusLog.WriteLine("\n[hotkey: busy right now - ignored]\n");
             return;
@@ -1129,7 +1169,14 @@ internal sealed class NovaAssistant
     // may have moved on since the watcher's own check.
     public void TriggerAmbientFileSuggestion(string filePath, string fileSnippet)
     {
-        if (!_engaged || _pendingAuthorization is not null)
+        // Confirmed live as a real bug: this guard was missing
+        // _pendingGate2Review, unlike TriggerTerminalSuggestion's own
+        // identical check just below - a file-change suggestion landing
+        // while an irreversible action is still awaiting its click-only
+        // review would dispatch through ProcessTextInputAsync below, which
+        // silently auto-declines the still-open review using this method's
+        // own synthetic text as if it were the user's answer.
+        if (!_engaged || _pendingAuthorization is not null || _pendingGate2Review is not null)
         {
             return;
         }
@@ -1374,13 +1421,7 @@ internal sealed class NovaAssistant
 
         if (Interlocked.Exchange(ref _isBusy, 1) != 0)
         {
-            // Same diagnostic gap as DispatchUtterance's own steal branch -
-            // see its own comment.
-            StatusLog.WriteLine("[typed text arrived while still busy - cancelling the previous task]");
-            _tts.StopPlayback();
-            _turnCts?.Cancel();
-            Volatile.Write(ref _novaSpeaking, 0);
-            Volatile.Write(ref _currentActivity, null);
+            CancelStolenTask("[typed text arrived while still busy - cancelling the previous task]");
         }
 
         _engaged = true;
@@ -1827,15 +1868,30 @@ internal sealed class NovaAssistant
 
         try
         {
-            // Not a clear yes - the pending tool_use call(s) still need a
-            // tool_result, or the conversation becomes permanently invalid
-            // (the API rejects every subsequent request) since Claude is
-            // left waiting on a call that never got resolved. Decline them
-            // in the same message as the new input, since Claude/Anthropic
-            // requires the tool_result to come immediately after the
-            // tool_use turn - it can't be a separate later message. Shared
-            // between Gate 1 and Gate 2 resolution below - identical shape,
-            // just which pending field it clears differs.
+            // The pending tool_use call(s) still need a tool_result, or the
+            // conversation becomes permanently invalid (the API rejects
+            // every subsequent request) since Claude is left waiting on a
+            // call that never got resolved. Shared by every decline path
+            // below (Gate 1's non-affirmative reply, Gate 2's popup Cancel,
+            // and Gate 2's voice/text decline) - only the reason text and
+            // whether the user's own words are carried forward differ.
+            void DeclinePending(List<PendingToolCall> pendingCalls, string reason, bool includeUserText)
+            {
+                List<ContentBlockParam> declineContent = pendingCalls
+                    .Select(call => (ContentBlockParam)new ToolResultBlockParam(call.Id) { Content = reason, IsError = true })
+                    .ToList();
+                if (includeUserText)
+                {
+                    // Claude/Anthropic requires the tool_result to come
+                    // immediately after the tool_use turn - it can't be a
+                    // separate later message, so the new input rides along
+                    // in the same message rather than a follow-up one.
+                    declineContent.Add(new TextBlockParam(input));
+                }
+
+                _conversation.Add(new MessageParam { Role = Role.User, Content = declineContent });
+            }
+
             (bool Authorized, List<PendingToolCall>? Calls) ResolvePending(List<PendingToolCall> pendingCalls)
             {
                 if (TextHeuristics.LooksAffirmative(input))
@@ -1844,11 +1900,7 @@ internal sealed class NovaAssistant
                                                   // assistant's tool_use turn from before
                 }
 
-                List<ContentBlockParam> declineContent = pendingCalls
-                    .Select(call => (ContentBlockParam)new ToolResultBlockParam(call.Id) { Content = "User did not authorize this action.", IsError = true })
-                    .ToList();
-                declineContent.Add(new TextBlockParam(input));
-                _conversation.Add(new MessageParam { Role = Role.User, Content = declineContent });
+                DeclinePending(pendingCalls, "User did not authorize this action.", includeUserText: true);
                 return (false, null);
             }
 
@@ -1887,10 +1939,7 @@ internal sealed class NovaAssistant
                     }
                     else
                     {
-                        List<ContentBlockParam> declineContent = pendingGate2Calls
-                            .Select(call => (ContentBlockParam)new ToolResultBlockParam(call.Id) { Content = "User declined this action via the confirmation popup.", IsError = true })
-                            .ToList();
-                        _conversation.Add(new MessageParam { Role = Role.User, Content = declineContent });
+                        DeclinePending(pendingGate2Calls, "User declined this action via the confirmation popup.", includeUserText: false);
                     }
                 }
                 else
@@ -1901,12 +1950,8 @@ internal sealed class NovaAssistant
                     // deliberately click-only (see ConfirmPopup) so an STT
                     // slip can't authorize an irreversible action. Same
                     // decline-and-carry-forward shape as ResolvePending's
-                    // non-affirmative branch below, just unconditional here.
-                    List<ContentBlockParam> declineContent = pendingGate2Calls
-                        .Select(call => (ContentBlockParam)new ToolResultBlockParam(call.Id) { Content = "User did not authorize this action.", IsError = true })
-                        .ToList();
-                    declineContent.Add(new TextBlockParam(input));
-                    _conversation.Add(new MessageParam { Role = Role.User, Content = declineContent });
+                    // non-affirmative branch above, just unconditional here.
+                    DeclinePending(pendingGate2Calls, "User did not authorize this action.", includeUserText: true);
                 }
             }
             else if (_pendingAuthorization is { } pendingCalls)
@@ -2328,7 +2373,14 @@ internal sealed class NovaAssistant
                     // cache. A cache hit doesn't get reused blindly - see
                     // ToolCacheAdvisor for why (a real judgment call, not a
                     // rule, defaulting to a fresh call on any doubt).
-                    string? cacheKey = ToolCatalog.FreeTools.Contains(call.Name)
+                    // ToolCatalog.IsFree(call), not FreeTools.Contains(call.Name)
+                    // - confirmed live as a real bug: the name-only set doesn't
+                    // know about a call's own input (e.g. open_path with
+                    // run_as_admin=true is Gate 2, not free), so a repeated
+                    // elevated admin action could get silently served from
+                    // cache instead of actually re-running after the user
+                    // confirmed the second Gate 2 review.
+                    string? cacheKey = ToolCatalog.IsFree(call)
                         ? $"{call.Name}:{JsonSerializer.Serialize(call.Input)}"
                         : null;
                     bool reusedFromCache = false;
@@ -2505,6 +2557,7 @@ internal sealed class NovaAssistant
         await Task.Delay(SpeechCooldownMs);
         Volatile.Write(ref _isBusy, 0);
         Volatile.Write(ref _currentActivity, null);
+        FinishLastActivity();
         // See AmbientGraceAfterTask's own doc comment - marks the moment
         // an ambient update is allowed to independently claim _isBusy
         // again, rather than the instant it goes false.
