@@ -32,12 +32,7 @@ Beyond calling tools, Nova also learns *how* to approach a task, not just facts 
 
 Nova runs as a small floating overlay rather than a console window, with three interchangeable skins — same live state (listening, speaking, asleep, what she's currently doing), three completely different looks. Cycle between them anytime with the switcher button.
 
-| ARC | WEB | AURA |
-|---|---|---|
-| ![ARC skin](docs/arc.png) | ![WEB skin](docs/web.png) | ![AURA skin](docs/aura.png) |
-| Hologram-globe HUD, cyan theme | Retro pixel-art tracker | Soft pastel companion |
-
-Each skin also has three sizes, same state carried across all of them:
+Each skin has three sizes, same state carried across all of them:
 
 | | ARC | WEB | AURA |
 |---|---|---|---|
