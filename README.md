@@ -44,6 +44,16 @@ Each skin has three sizes, same state carried across all of them:
 
 A single click collapses straight back down to the pill from either size.
 
+## Demos
+
+Short screen recordings of Nova actually running - real speech in, real actions out, not staged.
+
+[![Discount emails → spreadsheet](https://img.youtube.com/vi/fUt1WdQVMmE/maxresdefault.jpg)](https://youtu.be/fUt1WdQVMmE)
+
+Searches recent promotional emails, pulls out the real discounts, builds a spreadsheet, and emails it back to me - `search_email`/`read_email`, `create_sheet`/`append_sheet_rows`, and `send_email` in one task, run with zero permission friction since it's a direct request.
+
+More on the way.
+
 ## What's next
 - Local LLM support, as an alternative to the Claude API — mostly a cost question rather than a time one; the reasoning core needs a model genuinely capable of long agentic tool-use loops, and the local options at that bar are still heavier/pricier (hardware-wise) than paying per-call
 - Full UI customization — position, theming, layout, beyond just the three built-in skins
