@@ -36,7 +36,7 @@ internal sealed class DriveClient
         request.PageSize = maxResults;
         request.Fields = "files(id, name, mimeType, webViewLink, modifiedTime)";
 
-        Google.Apis.Drive.v3.Data.FileList result = await request.ExecuteAsync(cancellationToken);
+        Google.Apis.Drive.v3.Data.FileList result = await GoogleRateLimitRetry.WithRetryAsync(() => request.ExecuteAsync(cancellationToken), cancellationToken);
         if (result.Files is null || result.Files.Count == 0)
         {
             return "No matching files found.";

@@ -13,7 +13,17 @@ internal static class WatchedTerminalLauncher
 {
     public static string Open(string repoRoot)
     {
-        string relayExePath = Path.Combine(repoRoot, "TerminalRelay", "bin", "Debug", "net10.0", "NovaTerminalRelay.exe");
+        // Matches whichever configuration Nova.Core itself was built in
+        // (checked at compile time, not runtime) - a hardcoded "Debug" here
+        // would silently fail to find the relay the moment Nova is ever
+        // built/run as Release, even with a Release build of TerminalRelay
+        // sitting right there.
+#if DEBUG
+        const string Configuration = "Debug";
+#else
+        const string Configuration = "Release";
+#endif
+        string relayExePath = Path.Combine(repoRoot, "TerminalRelay", "bin", Configuration, "net10.0", "NovaTerminalRelay.exe");
         if (!File.Exists(relayExePath))
         {
             return "Couldn't find the terminal relay executable - it needs building first " +

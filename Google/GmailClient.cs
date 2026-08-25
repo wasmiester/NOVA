@@ -75,7 +75,7 @@ internal sealed class GmailClient
     // the actual readable content instead of Claude ever seeing raw MIME.
     public async Task<string> ReadEmailAsync(string messageId, CancellationToken cancellationToken)
     {
-        Message full = await WithRateLimitRetryAsync(
+        Message full = await GoogleRateLimitRetry.WithRetryAsync(
             () => _service.Users.Messages.Get(UserId, messageId).ExecuteAsync(cancellationToken), cancellationToken);
         string subject = HeaderValue(full, "Subject") ?? "(no subject)";
         string from = HeaderValue(full, "From") ?? "(unknown sender)";
@@ -181,7 +181,7 @@ internal sealed class GmailClient
         UsersResource.MessagesResource.ListRequest listRequest = _service.Users.Messages.List(UserId);
         listRequest.Q = query;
         listRequest.MaxResults = maxResults;
-        ListMessagesResponse list = await WithRateLimitRetryAsync(() => listRequest.ExecuteAsync(cancellationToken), cancellationToken);
+        ListMessagesResponse list = await GoogleRateLimitRetry.WithRetryAsync(() => listRequest.ExecuteAsync(cancellationToken), cancellationToken);
         if (list.Messages is null || list.Messages.Count == 0)
         {
             return [];
@@ -202,7 +202,7 @@ internal sealed class GmailClient
             await GetConcurrencyLimit.WaitAsync(cancellationToken);
             try
             {
-                return await WithRateLimitRetryAsync(
+                return await GoogleRateLimitRetry.WithRetryAsync(
                     () => _service.Users.Messages.Get(UserId, stub.Id).ExecuteAsync(cancellationToken), cancellationToken);
             }
             finally
@@ -226,32 +226,6 @@ internal sealed class GmailClient
         }
 
         return results;
-    }
-
-    // Google's own guidance for a 429 is to back off and retry, not treat
-    // it as a hard failure - previously any rate-limit hit surfaced
-    // straight to Claude as a generic "Tool error," indistinguishable from
-    // a real failure, which led to reformulating the query (the wrong
-    // response to a rate limit, and part of why near-duplicate searches
-    // kept showing up seconds apart) instead of just trying again shortly
-    // after. Retries transparently - Claude never needs to know a rate
-    // limit happened unless every attempt still fails.
-    private static async Task<T> WithRateLimitRetryAsync<T>(Func<Task<T>> call, CancellationToken cancellationToken)
-    {
-        const int maxAttempts = 4;
-        TimeSpan delay = TimeSpan.FromMilliseconds(500);
-        for (int attempt = 1; ; attempt++)
-        {
-            try
-            {
-                return await call();
-            }
-            catch (Google.GoogleApiException ex) when (ex.HttpStatusCode == System.Net.HttpStatusCode.TooManyRequests && attempt < maxAttempts)
-            {
-                await Task.Delay(delay, cancellationToken);
-                delay *= 2;
-            }
-        }
     }
 
     private static string? HeaderValue(Message message, string name) =>

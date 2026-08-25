@@ -30,7 +30,8 @@ internal sealed class SheetsClient
     public async Task<string> ReadAsync(string spreadsheetId, string? range, CancellationToken cancellationToken)
     {
         string effectiveRange = range ?? await GetFirstSheetTitleAsync(spreadsheetId, cancellationToken);
-        ValueRange result = await _service.Spreadsheets.Values.Get(spreadsheetId, effectiveRange).ExecuteAsync(cancellationToken);
+        SpreadsheetsResource.ValuesResource.GetRequest getRequest = _service.Spreadsheets.Values.Get(spreadsheetId, effectiveRange);
+        ValueRange result = await GoogleRateLimitRetry.WithRetryAsync(() => getRequest.ExecuteAsync(cancellationToken), cancellationToken);
         return FormatRows(result.Values, $"\"{effectiveRange}\" is empty.");
     }
 
@@ -39,10 +40,11 @@ internal sealed class SheetsClient
     // starting at A1 of the new spreadsheet's first (default) sheet.
     public async Task<string> CreateAsync(string title, IList<IList<object>>? initialRows, CancellationToken cancellationToken)
     {
-        Spreadsheet created = await _service.Spreadsheets.Create(new Spreadsheet
+        SpreadsheetsResource.CreateRequest createRequest = _service.Spreadsheets.Create(new Spreadsheet
         {
             Properties = new SpreadsheetProperties { Title = title },
-        }).ExecuteAsync(cancellationToken);
+        });
+        Spreadsheet created = await GoogleRateLimitRetry.WithRetryAsync(() => createRequest.ExecuteAsync(cancellationToken), cancellationToken);
 
         if (initialRows is { Count: > 0 })
         {
@@ -61,7 +63,7 @@ internal sealed class SheetsClient
         var body = new ValueRange { Values = rows };
         SpreadsheetsResource.ValuesResource.AppendRequest request = _service.Spreadsheets.Values.Append(body, spreadsheetId, effectiveRange);
         request.ValueInputOption = SpreadsheetsResource.ValuesResource.AppendRequest.ValueInputOptionEnum.USERENTERED;
-        await request.ExecuteAsync(cancellationToken);
+        await GoogleRateLimitRetry.WithRetryAsync(() => request.ExecuteAsync(cancellationToken), cancellationToken);
         return $"Appended {rows.Count} row(s) to {effectiveRange}.";
     }
 
@@ -80,12 +82,13 @@ internal sealed class SheetsClient
         var body = new ValueRange { Values = values };
         SpreadsheetsResource.ValuesResource.UpdateRequest request = _service.Spreadsheets.Values.Update(body, spreadsheetId, range);
         request.ValueInputOption = SpreadsheetsResource.ValuesResource.UpdateRequest.ValueInputOptionEnum.USERENTERED;
-        await request.ExecuteAsync(cancellationToken);
+        await GoogleRateLimitRetry.WithRetryAsync(() => request.ExecuteAsync(cancellationToken), cancellationToken);
     }
 
     private async Task<string> GetFirstSheetTitleAsync(string spreadsheetId, CancellationToken cancellationToken)
     {
-        Spreadsheet spreadsheet = await _service.Spreadsheets.Get(spreadsheetId).ExecuteAsync(cancellationToken);
+        SpreadsheetsResource.GetRequest getRequest = _service.Spreadsheets.Get(spreadsheetId);
+        Spreadsheet spreadsheet = await GoogleRateLimitRetry.WithRetryAsync(() => getRequest.ExecuteAsync(cancellationToken), cancellationToken);
         string title = spreadsheet.Sheets?.FirstOrDefault()?.Properties?.Title ?? "Sheet1";
         return QuoteSheetName(title);
     }

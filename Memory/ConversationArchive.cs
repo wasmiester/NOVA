@@ -48,7 +48,7 @@ internal static class ConversationArchive
 
     public static async Task Save(string dbPath, LocalEmbeddingGenerator embeddingGenerator, DateTime startedAtUtc, string summary, string transcript)
     {
-        byte[] embeddingBytes = await EmbedToBytesAsync(embeddingGenerator, summary);
+        byte[] embeddingBytes = await EmbeddingMath.EmbedToBytesAsync(embeddingGenerator, summary);
 
         using var connection = new SqliteConnection($"Data Source={dbPath}");
         connection.Open();
@@ -91,8 +91,8 @@ internal static class ConversationArchive
 
             if (!reader.IsDBNull(3))
             {
-                float[] storedVector = BytesToFloats(reader.GetFieldValue<byte[]>(3));
-                float similarity = CosineSimilarity(queryVector, storedVector);
+                float[] storedVector = EmbeddingMath.BytesToFloats(reader.GetFieldValue<byte[]>(3));
+                float similarity = EmbeddingMath.CosineSimilarity(queryVector, storedVector);
                 score = Math.Max(score, keywordHit ? score : similarity);
                 if (!keywordHit && similarity < SemanticThreshold)
                 {
@@ -134,33 +134,4 @@ internal static class ConversationArchive
         return sb.ToString().TrimEnd();
     }
 
-    private static async Task<byte[]> EmbedToBytesAsync(LocalEmbeddingGenerator embeddingGenerator, string text)
-    {
-        float[] vector = (await embeddingGenerator.GenerateEmbeddingAsync(text)).Vector.ToArray();
-        byte[] bytes = new byte[vector.Length * sizeof(float)];
-        Buffer.BlockCopy(vector, 0, bytes, 0, bytes.Length);
-        return bytes;
-    }
-
-    private static float[] BytesToFloats(byte[] bytes)
-    {
-        float[] vector = new float[bytes.Length / sizeof(float)];
-        Buffer.BlockCopy(bytes, 0, vector, 0, bytes.Length);
-        return vector;
-    }
-
-    private static float CosineSimilarity(float[] a, float[] b)
-    {
-        float dot = 0f;
-        float normA = 0f;
-        float normB = 0f;
-        for (int i = 0; i < a.Length; i++)
-        {
-            dot += a[i] * b[i];
-            normA += a[i] * a[i];
-            normB += b[i] * b[i];
-        }
-
-        return dot / (MathF.Sqrt(normA) * MathF.Sqrt(normB));
-    }
 }

@@ -32,7 +32,7 @@ internal sealed class TerminalWatcher : IDisposable
 
     private readonly StringBuilder _buffer = new();
     private readonly object _bufferLock = new();
-    private CancellationTokenSource? _debounceCts;
+    private readonly DebounceScheduler _debounce = new();
 
     public TerminalWatcher(AnthropicClient client, Func<bool> isEligible, Action<string> onWorthSurfacing)
     {
@@ -102,29 +102,12 @@ internal sealed class TerminalWatcher : IDisposable
 
             // A command can print output over several rapid chunks - debounce
             // so the gate only runs once things settle, not mid-stream.
-            _debounceCts?.Cancel();
-            var cts = new CancellationTokenSource();
-            _debounceCts = cts;
-            _ = DebounceAndCheckAsync(cts.Token);
+            _debounce.Schedule(DebounceDelay, _isEligible, CheckAsync);
         }
     }
 
-    private async Task DebounceAndCheckAsync(CancellationToken token)
+    private async Task CheckAsync(CancellationToken token)
     {
-        try
-        {
-            await Task.Delay(DebounceDelay, token);
-        }
-        catch (OperationCanceledException)
-        {
-            return; // superseded by newer output
-        }
-
-        if (!_isEligible())
-        {
-            return;
-        }
-
         string snapshot;
         lock (_bufferLock)
         {

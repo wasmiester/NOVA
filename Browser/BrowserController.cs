@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 using System.IO;
 using System.Linq;
 using System.Text.Json;
@@ -87,6 +88,46 @@ internal sealed class BrowserController
         }
 
         _fieldRefs.Clear();
+    }
+
+    // Shared by every form-interaction tool (browser_fill/select/check/upload)
+    // plus browser_click - each one needs a live tab before doing anything
+    // else, and used to repeat this same InvalidateClosedActivePage-then-check
+    // pair verbatim. Hands back the resolved page (rather than leaving callers
+    // to keep reading the _activeBrowserPage field themselves) so the
+    // nullability the check just established stays visible to the compiler
+    // all the way through the caller's method, not just at the check site.
+    private bool TryGetActivePage([NotNullWhen(true)] out IPage? page, [NotNullWhen(false)] out string? error)
+    {
+        InvalidateClosedActivePage();
+        if (_activeBrowserPage is null)
+        {
+            page = null;
+            error = "No tab is selected yet - use browser_read first (with tab_hint if more than one tab is open).";
+            return false;
+        }
+
+        page = _activeBrowserPage;
+        error = null;
+        return true;
+    }
+
+    // Shared by every form-interaction tool that accepts an optional
+    // field_ref from a prior browser_read - same lookup-or-explain-why-not
+    // shape, just what each caller then does with the resolved handle
+    // differs (Fill/Check/Upload act on it directly, Select also tries a
+    // combobox fallback).
+    private bool TryResolveFieldRef(string fieldRef, [NotNullWhen(true)] out IElementHandle? handle, [NotNullWhen(false)] out string? error)
+    {
+        if (_fieldRefs.TryGetValue(fieldRef, out handle))
+        {
+            error = null;
+            return true;
+        }
+
+        error = $"Ref \"{fieldRef}\" isn't valid - the page may have changed since the last browser_read. " +
+                "Call browser_read again and use a fresh ref.";
+        return false;
     }
 
     // For the overlay's "CHROME LINKED" status chip - true once a browser
@@ -364,19 +405,16 @@ internal sealed class BrowserController
         string label = input["label"].GetString()!;
         string value = input["value"].GetString()!;
         string? fieldRef = ToolInput.GetString(input, "field_ref");
-        InvalidateClosedActivePage();
-
-        if (_activeBrowserPage is null)
+        if (!TryGetActivePage(out IPage? page, out string? noTabError))
         {
-            return "No tab is selected yet - use browser_read first (with tab_hint if more than one tab is open).";
+            return noTabError;
         }
 
         if (fieldRef is not null)
         {
-            if (!_fieldRefs.TryGetValue(fieldRef, out IElementHandle? handle))
+            if (!TryResolveFieldRef(fieldRef, out IElementHandle? handle, out string? error))
             {
-                return $"Ref \"{fieldRef}\" isn't valid - the page may have changed since the last browser_read. " +
-                       "Call browser_read again and use a fresh ref.";
+                return error;
             }
 
             await handle.FillAsync(value);
@@ -389,7 +427,7 @@ internal sealed class BrowserController
         // section having its own "Month"). Use the ref from browser_read's
         // field list in that case instead.
         ILocator? fieldLocator = null;
-        foreach (IFrame frame in _activeBrowserPage.Frames)
+        foreach (IFrame frame in page.Frames)
         {
             ILocator candidate = frame.GetByLabel(label);
             if (await candidate.CountAsync() > 0)
@@ -418,19 +456,16 @@ internal sealed class BrowserController
         string label = input["label"].GetString()!;
         string value = input["value"].GetString()!;
         string? fieldRef = ToolInput.GetString(input, "field_ref");
-        InvalidateClosedActivePage();
-
-        if (_activeBrowserPage is null)
+        if (!TryGetActivePage(out IPage? page, out string? noTabError))
         {
-            return "No tab is selected yet - use browser_read first (with tab_hint if more than one tab is open).";
+            return noTabError;
         }
 
         if (fieldRef is not null)
         {
-            if (!_fieldRefs.TryGetValue(fieldRef, out IElementHandle? handle))
+            if (!TryResolveFieldRef(fieldRef, out IElementHandle? handle, out string? error))
             {
-                return $"Ref \"{fieldRef}\" isn't valid - the page may have changed since the last browser_read. " +
-                       "Call browser_read again and use a fresh ref.";
+                return error;
             }
 
             try
@@ -453,7 +488,7 @@ internal sealed class BrowserController
         // No ref given - fine for a dropdown whose label is unique on the
         // page; always hits the first match otherwise, same caveat as
         // browser_fill's label-only path.
-        foreach (IFrame frame in _activeBrowserPage.Frames)
+        foreach (IFrame frame in page.Frames)
         {
             ILocator candidate = frame.GetByLabel(label);
             if (await candidate.CountAsync() > 0)
@@ -492,7 +527,7 @@ internal sealed class BrowserController
         // covered this specific widget shape. Same free-to-use reasoning as
         // the rest of this method - still just answering a form question,
         // not submitting anything.
-        string? radioGroupError = await TryRadioGroupSelectAsync(_activeBrowserPage, label, value);
+        string? radioGroupError = await TryRadioGroupSelectAsync(page, label, value);
         if (radioGroupError is null)
         {
             return $"Selected \"{value}\" for \"{label}\" (radio-button/toggle question group).";
@@ -511,6 +546,50 @@ internal sealed class BrowserController
     // no group scoping risks clicking the wrong question's "Yes" entirely
     // when a form has several similar-shaped questions on one page, which
     // is worse than just reporting "couldn't find it."
+    // Bounded click with a force-click fallback on timeout - originally
+    // built for TryRadioGroupSelectAsync below, now shared by every site
+    // that clicks an arbitrary Button/Link/Option/Radio element found on a
+    // real-world form. Confirmed live as a real hang, not a guess: a plain
+    // unbounded click ran the full 60 seconds three times in a row on a
+    // real Ashby form before the outer tool timeout finally killed it - the
+    // native input a lot of component libraries build their custom-styled
+    // controls on top of is commonly visually hidden (zero size, opacity 0)
+    // behind the styled sibling the user actually sees, and Playwright's
+    // normal click retries its own visibility/stability check indefinitely
+    // against that hidden element, since it can never pass. Failing fast
+    // and retrying with Force=true is safe specifically because the caller
+    // already resolved `locator`/`element` to a real, confirmed match by
+    // role/text before calling this - this only skips the part of the
+    // check that a hidden-input-behind-a-styled-sibling pattern fails for
+    // reasons that have nothing to do with whether it's the right control.
+    private static async Task ClickWithFallbackAsync(ILocator locator, int timeoutMs = 3000)
+    {
+        try
+        {
+            await locator.ClickAsync(new LocatorClickOptions { Timeout = timeoutMs });
+        }
+        catch (TimeoutException)
+        {
+            await locator.ClickAsync(new LocatorClickOptions { Force = true, Timeout = timeoutMs });
+        }
+    }
+
+    // Same shape as the ILocator overload above, for the one call site
+    // (TryComboboxSelectAsync) that's still holding an IElementHandle
+    // rather than a Locator - see _fieldRefs' own doc comment for why that
+    // site can't just re-resolve a fresh Locator instead.
+    private static async Task ClickWithFallbackAsync(IElementHandle element, int timeoutMs = 3000)
+    {
+        try
+        {
+            await element.ClickAsync(new ElementHandleClickOptions { Timeout = timeoutMs });
+        }
+        catch (TimeoutException)
+        {
+            await element.ClickAsync(new ElementHandleClickOptions { Force = true, Timeout = timeoutMs });
+        }
+    }
+
     private static async Task<string?> TryRadioGroupSelectAsync(IPage page, string label, string value)
     {
         try
@@ -523,41 +602,7 @@ internal sealed class BrowserController
 
             ILocator option = group.First.GetByRole(AriaRole.Radio, new LocatorGetByRoleOptions { Name = value, Exact = false });
             await option.First.WaitForAsync(new LocatorWaitForOptions { Timeout = 700 });
-
-            try
-            {
-                // Bounded well below ToolExecutionTimeout on purpose -
-                // confirmed live as a real hang, not a guess: a plain click
-                // here ran the full 60 seconds three times in a row on a
-                // real Ashby form before the outer timeout finally killed
-                // it. The role=radio match itself succeeds fast (proven by
-                // WaitForAsync above resolving in well under 700ms) but the
-                // native input a lot of these component libraries build
-                // their custom-styled radio pills on top of is commonly
-                // visually hidden (zero size, opacity 0) behind the styled
-                // sibling the user actually sees - Playwright's normal
-                // click retries its own visibility/stability check
-                // indefinitely against that hidden element, since it can
-                // never pass. Fail fast here instead of tying up the whole
-                // tool call.
-                await option.First.ClickAsync(new LocatorClickOptions { Timeout = 3000 });
-            }
-            catch (TimeoutException)
-            {
-                // Same element, same match - just tell Playwright to
-                // dispatch the click without waiting for the strict
-                // visibility/stability checks that are almost certainly
-                // what's actually blocking here. Safe specifically because
-                // `option` was already confirmed, above, to be a real
-                // role=radio match by accessible name - this isn't forcing
-                // a click on something never verified to be the right
-                // element, only skipping the part of the check that a
-                // hidden-native-input-behind-a-styled-sibling pattern fails
-                // for reasons that have nothing to do with whether it's
-                // the correct control.
-                await option.First.ClickAsync(new LocatorClickOptions { Force = true, Timeout = 3000 });
-            }
-
+            await ClickWithFallbackAsync(option.First);
             return null;
         }
         catch (Exception ex)
@@ -600,7 +645,7 @@ internal sealed class BrowserController
 
         try
         {
-            await field.ClickAsync();
+            await ClickWithFallbackAsync(field);
             if (await TryClickMatchingOptionAsync(page, value))
             {
                 return null;
@@ -642,7 +687,7 @@ internal sealed class BrowserController
             {
                 ILocator candidate = page.GetByRole(role, new PageGetByRoleOptions { Name = value, Exact = false });
                 await candidate.First.WaitForAsync(new LocatorWaitForOptions { Timeout = 700 });
-                await candidate.First.ClickAsync();
+                await ClickWithFallbackAsync(candidate.First);
                 return true;
             }
             catch
@@ -655,7 +700,7 @@ internal sealed class BrowserController
         {
             ILocator textMatch = page.GetByText(value, new PageGetByTextOptions { Exact = false }).Last;
             await textMatch.WaitForAsync(new LocatorWaitForOptions { Timeout = 700, State = WaitForSelectorState.Visible });
-            await textMatch.ClickAsync();
+            await ClickWithFallbackAsync(textMatch);
             return true;
         }
         catch
@@ -671,21 +716,18 @@ internal sealed class BrowserController
         string label = input["label"].GetString()!;
         bool shouldCheck = ToolInput.GetBool(input, "checked") ?? true;
         string? fieldRef = ToolInput.GetString(input, "field_ref");
-        InvalidateClosedActivePage();
-
-        if (_activeBrowserPage is null)
+        if (!TryGetActivePage(out IPage? page, out string? noTabError))
         {
-            return "No tab is selected yet - use browser_read first (with tab_hint if more than one tab is open).";
+            return noTabError;
         }
 
         string verb = shouldCheck ? "Checked" : "Unchecked";
 
         if (fieldRef is not null)
         {
-            if (!_fieldRefs.TryGetValue(fieldRef, out IElementHandle? handle))
+            if (!TryResolveFieldRef(fieldRef, out IElementHandle? handle, out string? error))
             {
-                return $"Ref \"{fieldRef}\" isn't valid - the page may have changed since the last browser_read. " +
-                       "Call browser_read again and use a fresh ref.";
+                return error;
             }
 
             if (shouldCheck)
@@ -700,7 +742,7 @@ internal sealed class BrowserController
             return $"{verb} \"{label}\".";
         }
 
-        foreach (IFrame frame in _activeBrowserPage.Frames)
+        foreach (IFrame frame in page.Frames)
         {
             ILocator candidate = frame.GetByLabel(label);
             if (await candidate.CountAsync() > 0)
@@ -735,11 +777,9 @@ internal sealed class BrowserController
         string label = input["label"].GetString()!;
         string filePath = input["file_path"].GetString()!;
         string? fieldRef = ToolInput.GetString(input, "field_ref");
-        InvalidateClosedActivePage();
-
-        if (_activeBrowserPage is null)
+        if (!TryGetActivePage(out IPage? page, out string? noTabError))
         {
-            return "No tab is selected yet - use browser_read first (with tab_hint if more than one tab is open).";
+            return noTabError;
         }
 
         if (!File.Exists(filePath))
@@ -749,17 +789,16 @@ internal sealed class BrowserController
 
         if (fieldRef is not null)
         {
-            if (!_fieldRefs.TryGetValue(fieldRef, out IElementHandle? handle))
+            if (!TryResolveFieldRef(fieldRef, out IElementHandle? handle, out string? error))
             {
-                return $"Ref \"{fieldRef}\" isn't valid - the page may have changed since the last browser_read. " +
-                       "Call browser_read again and use a fresh ref.";
+                return error;
             }
 
             await handle.SetInputFilesAsync(filePath);
             return $"Uploaded \"{Path.GetFileName(filePath)}\" to \"{label}\".";
         }
 
-        foreach (IFrame frame in _activeBrowserPage.Frames)
+        foreach (IFrame frame in page.Frames)
         {
             ILocator candidate = frame.GetByLabel(label);
             if (await candidate.CountAsync() > 0)
@@ -787,20 +826,19 @@ internal sealed class BrowserController
             return refusalReason!;
         }
 
-        InvalidateClosedActivePage();
-        if (_activeBrowserPage is null)
+        if (!TryGetActivePage(out IPage? page, out string? noTabError))
         {
-            return "No tab is selected yet - use browser_read first (with tab_hint if more than one tab is open).";
+            return noTabError;
         }
 
-        foreach (IFrame frame in _activeBrowserPage.Frames)
+        foreach (IFrame frame in page.Frames)
         {
             foreach (AriaRole role in new[] { AriaRole.Button, AriaRole.Link })
             {
                 ILocator candidate = frame.GetByRole(role, new FrameGetByRoleOptions { Name = label });
                 if (await candidate.CountAsync() > 0)
                 {
-                    await candidate.First.ClickAsync();
+                    await ClickWithFallbackAsync(candidate.First);
                     // Every allowed label here exists specifically to change
                     // page/step state (pagination, expand/collapse, "Add
                     // Another", "Back") - any cached field refs from before

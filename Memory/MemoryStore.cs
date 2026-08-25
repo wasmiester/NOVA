@@ -98,13 +98,13 @@ internal static class MemoryStore
     // shaped input dictionary just to reach the same reinforcement logic.
     public static async Task<string> SaveContent(string dbPath, LocalEmbeddingGenerator embeddingGenerator, string content, string tags)
     {
-        byte[] embeddingBytes = await EmbedToBytesAsync(embeddingGenerator, content);
-        float[] embeddingVector = BytesToFloats(embeddingBytes);
+        byte[] embeddingBytes = await EmbeddingMath.EmbedToBytesAsync(embeddingGenerator, content);
+        float[] embeddingVector = EmbeddingMath.BytesToFloats(embeddingBytes);
 
         using var connection = new SqliteConnection($"Data Source={dbPath}");
         connection.Open();
 
-        (long? existingId, string? existingTags) = FindReinforcementCandidate(connection, embeddingVector);
+        (long? existingId, string? existingTags) = FindReinforcementCandidate(connection, embeddingVector, tags);
         if (existingId is { } id)
         {
             using var updateCmd = connection.CreateCommand();
@@ -129,8 +129,22 @@ internal static class MemoryStore
         return "Saved to memory.";
     }
 
-    private static (long? Id, string? Tags) FindReinforcementCandidate(SqliteConnection connection, float[] queryVector)
+    // Confirmed live as a real bug: this used to scan every memory with no
+    // tag filter at all, so an unrelated "style" memory and an auto-written
+    // "strategy" memory could land above the threshold and silently
+    // overwrite each other - the whole point of tags (durable/style/
+    // task:<name>/strategy are documented as meaningfully different kinds
+    // of memory, not just labels) was never actually enforced here. Now
+    // only considers a candidate a match if it shares at least one tag with
+    // the new content - "same fact, restated" should mean the same kind of
+    // fact, not just semantically similar text regardless of category.
+    // Two untagged memories can still reinforce each other (neither belongs
+    // to an exclusive category), but a tagged one only ever merges with
+    // another that shares a tag.
+    private static (long? Id, string? Tags) FindReinforcementCandidate(SqliteConnection connection, float[] queryVector, string newTags)
     {
+        var newTagSet = SplitTags(newTags);
+
         using var cmd = connection.CreateCommand();
         cmd.CommandText = "SELECT id, tags, embedding FROM memories WHERE embedding IS NOT NULL";
         using var reader = cmd.ExecuteReader();
@@ -140,25 +154,35 @@ internal static class MemoryStore
         float bestScore = ReinforcementThreshold;
         while (reader.Read())
         {
-            float similarity = CosineSimilarity(queryVector, BytesToFloats(reader.GetFieldValue<byte[]>(2)));
+            string existingTags = reader.GetString(1);
+            var existingTagSet = SplitTags(existingTags);
+            bool sameCategory = (newTagSet.Count == 0 && existingTagSet.Count == 0) || newTagSet.Overlaps(existingTagSet);
+            if (!sameCategory)
+            {
+                continue;
+            }
+
+            float similarity = EmbeddingMath.CosineSimilarity(queryVector, EmbeddingMath.BytesToFloats(reader.GetFieldValue<byte[]>(2)));
             if (similarity >= bestScore)
             {
                 bestScore = similarity;
                 bestId = reader.GetInt64(0);
-                bestTags = reader.GetString(1);
+                bestTags = existingTags;
             }
         }
 
         return (bestId, bestTags);
     }
 
+    private static HashSet<string> SplitTags(string tags) =>
+        new(tags.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries), StringComparer.OrdinalIgnoreCase);
+
     // Keeps whatever scope/topic tags the reinforced memory already had
     // (e.g. "durable") plus anything new this save added, rather than the
     // new save's tags silently replacing them.
     private static string MergeTags(string existingTags, string newTags)
     {
-        IEnumerable<string> Split(string tags) => tags.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
-        List<string> merged = Split(existingTags).Concat(Split(newTags)).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        List<string> merged = SplitTags(existingTags).Concat(SplitTags(newTags)).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
         return string.Join(", ", merged);
     }
 
@@ -239,7 +263,7 @@ internal static class MemoryStore
     // fresh start for the reworked version.
     public static async Task UpdateStrategyContent(string dbPath, LocalEmbeddingGenerator embeddingGenerator, int id, string newContent)
     {
-        byte[] embeddingBytes = await EmbedToBytesAsync(embeddingGenerator, newContent);
+        byte[] embeddingBytes = await EmbeddingMath.EmbedToBytesAsync(embeddingGenerator, newContent);
 
         using var connection = new SqliteConnection($"Data Source={dbPath}");
         connection.Open();
@@ -287,8 +311,8 @@ internal static class MemoryStore
 
             if (!reader.IsDBNull(3))
             {
-                float[] storedVector = BytesToFloats(reader.GetFieldValue<byte[]>(3));
-                float similarity = CosineSimilarity(queryVector, storedVector);
+                float[] storedVector = EmbeddingMath.BytesToFloats(reader.GetFieldValue<byte[]>(3));
+                float similarity = EmbeddingMath.CosineSimilarity(queryVector, storedVector);
                 score = Math.Max(score, keywordHit ? score : similarity);
                 if (!keywordHit && similarity < SemanticThreshold)
                 {
@@ -311,33 +335,4 @@ internal static class MemoryStore
         return results.Any() ? string.Join("\n", results) : "No matching memories found.";
     }
 
-    private static async Task<byte[]> EmbedToBytesAsync(LocalEmbeddingGenerator embeddingGenerator, string text)
-    {
-        float[] vector = (await embeddingGenerator.GenerateEmbeddingAsync(text)).Vector.ToArray();
-        byte[] bytes = new byte[vector.Length * sizeof(float)];
-        Buffer.BlockCopy(vector, 0, bytes, 0, bytes.Length);
-        return bytes;
-    }
-
-    private static float[] BytesToFloats(byte[] bytes)
-    {
-        float[] vector = new float[bytes.Length / sizeof(float)];
-        Buffer.BlockCopy(bytes, 0, vector, 0, bytes.Length);
-        return vector;
-    }
-
-    private static float CosineSimilarity(float[] a, float[] b)
-    {
-        float dot = 0f;
-        float normA = 0f;
-        float normB = 0f;
-        for (int i = 0; i < a.Length; i++)
-        {
-            dot += a[i] * b[i];
-            normA += a[i] * a[i];
-            normB += b[i] * b[i];
-        }
-
-        return dot / (MathF.Sqrt(normA) * MathF.Sqrt(normB));
-    }
 }

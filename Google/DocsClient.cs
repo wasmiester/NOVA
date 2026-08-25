@@ -25,7 +25,7 @@ internal sealed class DocsClient
 
     public async Task<string> ReadAsync(string documentId, CancellationToken cancellationToken)
     {
-        Document doc = await _service.Documents.Get(documentId).ExecuteAsync(cancellationToken);
+        Document doc = await GoogleRateLimitRetry.WithRetryAsync(() => _service.Documents.Get(documentId).ExecuteAsync(cancellationToken), cancellationToken);
         string text = ExtractText(doc);
         return string.IsNullOrWhiteSpace(text) ? $"\"{doc.Title}\" is empty." : $"\"{doc.Title}\":\n{text}";
     }
@@ -34,7 +34,7 @@ internal sealed class DocsClient
     // separate BatchUpdate (InsertTextRequest), even for a brand new doc.
     public async Task<string> CreateAsync(string title, string? content, CancellationToken cancellationToken)
     {
-        Document created = await _service.Documents.Create(new Document { Title = title }).ExecuteAsync(cancellationToken);
+        Document created = await GoogleRateLimitRetry.WithRetryAsync(() => _service.Documents.Create(new Document { Title = title }).ExecuteAsync(cancellationToken), cancellationToken);
 
         if (!string.IsNullOrEmpty(content))
         {
@@ -74,11 +74,9 @@ internal sealed class DocsClient
             ],
         };
 
-        BatchUpdateDocumentResponse response = await _service.Documents.BatchUpdate(request, documentId).ExecuteAsync(cancellationToken);
+        BatchUpdateDocumentResponse response = await GoogleRateLimitRetry.WithRetryAsync(() => _service.Documents.BatchUpdate(request, documentId).ExecuteAsync(cancellationToken), cancellationToken);
         int? occurrences = response.Replies?.FirstOrDefault()?.ReplaceAllText?.OccurrencesChanged;
-        return occurrences is null or 0
-            ? $"No occurrences of \"{findText}\" found - nothing was changed. Re-read the doc if you're not sure of the exact text."
-            : $"Replaced {occurrences} occurrence(s) of \"{findText}\" with \"{replaceText}\".";
+        return GoogleReplaceTextResult.Describe(occurrences, findText, replaceText, "doc");
     }
 
     private async Task InsertAtEndAsync(string documentId, string text, CancellationToken cancellationToken)
@@ -89,7 +87,7 @@ internal sealed class DocsClient
             // document body itself, not a header/footer/footnote segment.
             Requests = [new Request { InsertText = new InsertTextRequest { Text = text, EndOfSegmentLocation = new EndOfSegmentLocation() } }],
         };
-        await _service.Documents.BatchUpdate(request, documentId).ExecuteAsync(cancellationToken);
+        await GoogleRateLimitRetry.WithRetryAsync(() => _service.Documents.BatchUpdate(request, documentId).ExecuteAsync(cancellationToken), cancellationToken);
     }
 
     // A Doc's body is a tree of StructuralElements; only Paragraph elements

@@ -48,8 +48,7 @@ internal sealed class AmbientFileWatcher : IDisposable
     private readonly Func<bool> _isEligible;
     private readonly Action<string, string> _onWorthSurfacing;
 
-    private readonly object _debounceLock = new();
-    private CancellationTokenSource? _debounceCts;
+    private readonly DebounceScheduler _debounce = new();
 
     public AmbientFileWatcher(string watchPath, AnthropicClient client, Func<bool> isEligible, Action<string, string> onWorthSurfacing)
     {
@@ -87,31 +86,11 @@ internal sealed class AmbientFileWatcher : IDisposable
 
         // A single save can fire several rapid change events - debounce so
         // the gate only runs once things settle, not mid-write.
-        lock (_debounceLock)
-        {
-            _debounceCts?.Cancel();
-            var cts = new CancellationTokenSource();
-            _debounceCts = cts;
-            _ = DebounceAndCheckAsync(e.FullPath, cts.Token);
-        }
+        _debounce.Schedule(DebounceDelay, _isEligible, token => CheckAsync(e.FullPath, token));
     }
 
-    private async Task DebounceAndCheckAsync(string path, CancellationToken token)
+    private async Task CheckAsync(string path, CancellationToken token)
     {
-        try
-        {
-            await Task.Delay(DebounceDelay, token);
-        }
-        catch (OperationCanceledException)
-        {
-            return; // superseded by a newer change
-        }
-
-        if (!_isEligible())
-        {
-            return;
-        }
-
         string? snippet = TryReadSnippet(path);
         if (snippet is null)
         {

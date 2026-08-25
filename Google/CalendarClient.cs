@@ -71,7 +71,7 @@ internal sealed class CalendarClient
         request.OrderBy = EventsResource.ListRequest.OrderByEnum.StartTime;
         request.MaxResults = maxResults;
 
-        Events events = await request.ExecuteAsync(cancellationToken);
+        Events events = await GoogleRateLimitRetry.WithRetryAsync(() => request.ExecuteAsync(cancellationToken), cancellationToken);
         return events.Items ?? [];
     }
 
@@ -85,7 +85,7 @@ internal sealed class CalendarClient
             End = new EventDateTime { DateTimeDateTimeOffset = end },
         };
 
-        Event created = await _service.Events.Insert(newEvent, PrimaryCalendarId).ExecuteAsync(cancellationToken);
+        Event created = await GoogleRateLimitRetry.WithRetryAsync(() => _service.Events.Insert(newEvent, PrimaryCalendarId).ExecuteAsync(cancellationToken), cancellationToken);
         return $"Created \"{summary}\" on your calendar for {start:ddd MMM d, h:mm tt}.";
     }
 }

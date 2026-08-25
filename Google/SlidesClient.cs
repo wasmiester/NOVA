@@ -25,7 +25,8 @@ internal sealed class SlidesClient
 
     public async Task<string> ReadAsync(string presentationId, CancellationToken cancellationToken)
     {
-        Presentation presentation = await _service.Presentations.Get(presentationId).ExecuteAsync(cancellationToken);
+        PresentationsResource.GetRequest getRequest = _service.Presentations.Get(presentationId);
+        Presentation presentation = await GoogleRateLimitRetry.WithRetryAsync(() => getRequest.ExecuteAsync(cancellationToken), cancellationToken);
         IList<Page>? slides = presentation.Slides;
         if (slides is null || slides.Count == 0)
         {
@@ -49,7 +50,8 @@ internal sealed class SlidesClient
     // into at creation time.
     public async Task<string> CreateAsync(string title, CancellationToken cancellationToken)
     {
-        Presentation created = await _service.Presentations.Create(new Presentation { Title = title }).ExecuteAsync(cancellationToken);
+        PresentationsResource.CreateRequest createRequest = _service.Presentations.Create(new Presentation { Title = title });
+        Presentation created = await GoogleRateLimitRetry.WithRetryAsync(() => createRequest.ExecuteAsync(cancellationToken), cancellationToken);
         return $"Created \"{title}\" (id: {created.PresentationId}).";
     }
 
@@ -73,7 +75,8 @@ internal sealed class SlidesClient
                 },
             ],
         };
-        BatchUpdatePresentationResponse createResponse = await _service.Presentations.BatchUpdate(createRequest, presentationId).ExecuteAsync(cancellationToken);
+        BatchUpdatePresentationResponse createResponse = await GoogleRateLimitRetry.WithRetryAsync(
+            () => _service.Presentations.BatchUpdate(createRequest, presentationId).ExecuteAsync(cancellationToken), cancellationToken);
         // Safe-navigated, same as ReplaceTextAsync below and DocsClient -
         // a batch reply missing its matching entry (partial API failure,
         // quota edge case) should surface as a clear error, not an NRE.
@@ -83,7 +86,8 @@ internal sealed class SlidesClient
             return "The presentation API didn't confirm the new slide was created - nothing was added.";
         }
 
-        Page slide = await _service.Presentations.Pages.Get(presentationId, newSlideId).ExecuteAsync(cancellationToken);
+        PresentationsResource.PagesResource.GetRequest pageRequest = _service.Presentations.Pages.Get(presentationId, newSlideId);
+        Page slide = await GoogleRateLimitRetry.WithRetryAsync(() => pageRequest.ExecuteAsync(cancellationToken), cancellationToken);
         string? titlePlaceholderId = FindPlaceholderId(slide, "TITLE");
         string? bodyPlaceholderId = FindPlaceholderId(slide, "BODY");
 
@@ -100,7 +104,9 @@ internal sealed class SlidesClient
 
         if (textRequests.Count > 0)
         {
-            await _service.Presentations.BatchUpdate(new BatchUpdatePresentationRequest { Requests = textRequests }, presentationId).ExecuteAsync(cancellationToken);
+            await GoogleRateLimitRetry.WithRetryAsync(
+                () => _service.Presentations.BatchUpdate(new BatchUpdatePresentationRequest { Requests = textRequests }, presentationId).ExecuteAsync(cancellationToken),
+                cancellationToken);
         }
 
         // Report what actually happened rather than a blanket success -
@@ -140,11 +146,10 @@ internal sealed class SlidesClient
             ],
         };
 
-        BatchUpdatePresentationResponse response = await _service.Presentations.BatchUpdate(request, presentationId).ExecuteAsync(cancellationToken);
+        BatchUpdatePresentationResponse response = await GoogleRateLimitRetry.WithRetryAsync(
+            () => _service.Presentations.BatchUpdate(request, presentationId).ExecuteAsync(cancellationToken), cancellationToken);
         int? occurrences = response.Replies?.FirstOrDefault()?.ReplaceAllText?.OccurrencesChanged;
-        return occurrences is null or 0
-            ? $"No occurrences of \"{findText}\" found - nothing was changed. Re-read the presentation if you're not sure of the exact text."
-            : $"Replaced {occurrences} occurrence(s) of \"{findText}\" with \"{replaceText}\".";
+        return GoogleReplaceTextResult.Describe(occurrences, findText, replaceText, "presentation");
     }
 
     private static string? FindPlaceholderId(Page slide, string placeholderType) =>
