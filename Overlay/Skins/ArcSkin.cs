@@ -137,7 +137,7 @@ internal sealed class ArcSkin : IOverlaySkin
         // information rather than showing it. A Viewbox (DownOnly so short
         // text like LISTENING never gets scaled *up*) shrinks the whole
         // line to fit the panel's width instead, so it stays fully legible
-        // just smaller - TruncateActivity below still exists as a safety
+        // just smaller - ActivityTextTruncation still exists as a safety
         // net so a pathological wall of text doesn't shrink to an
         // illegible sliver, just raised well past the old 36-char cutoff.
         _stateLabel = new TextBlock
@@ -200,11 +200,24 @@ internal sealed class ArcSkin : IOverlaySkin
         // chips with the theme-tracking hair/text-lo/accent brushes, unlike
         // WEB's filled dark chips. Backed by real Chrome/Gmail connection
         // state, same as WEB's.
-        _chromeChip = new TextBlock { FontFamily = new FontFamily("Consolas"), FontSize = 12 };
-        _gmailChip = new TextBlock { FontFamily = new FontFamily("Consolas"), FontSize = 12 };
-        var chromeChipBorder = new Border { BorderBrush = _hairBrush, BorderThickness = new Thickness(1), Padding = new Thickness(5, 3, 5, 3), Margin = new Thickness(0, 0, 6, 0), Child = _chromeChip };
-        var gmailChipBorder = new Border { BorderBrush = _hairBrush, BorderThickness = new Thickness(1), Padding = new Thickness(5, 3, 5, 3), Child = _gmailChip };
-        var chipsRow = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Center };
+        // Confirmed live as a real gap: a 76px MaxWidth (matching AuraSkin's
+        // own cap) was tight enough for AURA's proportional-font "Chrome
+        // connected" text, but Consolas at 12px runs noticeably wider per
+        // character - "CHROME · LINKED"/"GMAIL · OFFLINE" measured closer to
+        // ~115px, so both chips were forced to truncate hard, right at the
+        // "· LINKED"/"· OFFLINE" half that actually carries the state,
+        // while sitting close enough together (6px gap) to read as one
+        // squished cluster rather than two legible chips. Two changes: a
+        // wide-enough MaxWidth (140, comfortably past the longest realistic
+        // text) so nothing truncates, and a WrapPanel instead of a fixed
+        // horizontal row - side by side when there's room (always true once
+        // maximized), stacked with normal spacing instead of clipped/squished
+        // when there isn't (minimized mode's narrower 272 DIP panel).
+        _chromeChip = new TextBlock { FontFamily = new FontFamily("Consolas"), FontSize = 12, MaxWidth = 140 };
+        _gmailChip = new TextBlock { FontFamily = new FontFamily("Consolas"), FontSize = 12, MaxWidth = 140 };
+        var chromeChipBorder = new Border { BorderBrush = _hairBrush, BorderThickness = new Thickness(1), Padding = new Thickness(5, 3, 5, 3), Margin = new Thickness(0, 0, 6, 6), Child = _chromeChip };
+        var gmailChipBorder = new Border { BorderBrush = _hairBrush, BorderThickness = new Thickness(1), Padding = new Thickness(5, 3, 5, 3), Margin = new Thickness(0, 0, 0, 6), Child = _gmailChip };
+        var chipsRow = new WrapPanel { HorizontalAlignment = HorizontalAlignment.Center };
         chipsRow.Children.Add(chromeChipBorder);
         chipsRow.Children.Add(gmailChipBorder);
         var statusBar = new StackPanel { Margin = new Thickness(0, 12, 0, 0) };
@@ -248,7 +261,11 @@ internal sealed class ArcSkin : IOverlaySkin
             Background = _accentBgBrush,
             BorderBrush = _hairBrush,
             BorderThickness = new Thickness(1),
-            Padding = new Thickness(12, 0, 12, 0),
+            // Confirmed live: zero vertical padding with no explicit Height
+            // left this wrapping tight around the bare text line-height,
+            // reading as squished next to typeInput right beside it - match
+            // that sibling's own vertical padding instead.
+            Padding = new Thickness(12, 7, 12, 7),
             Cursor = new Cursor(StandardCursorType.Hand),
             // Confirmed live: at the narrower ~220px column width the
             // side-by-side maximize layout gives it, the Grid's arrange
@@ -408,7 +425,7 @@ internal sealed class ArcSkin : IOverlaySkin
             : state.IsSpeaking
                 ? "SPEAKING"
                 : working
-                    ? TruncateActivity(state.CurrentActivity!).ToUpperInvariant()
+                    ? ActivityTextTruncation.Truncate(state.CurrentActivity!).ToUpperInvariant()
                     : "LISTENING";
         _stateLabel.Text = stateText;
         _subLabel.Text = state.Asleep ? "CTRL+ALT+SPACE TO WAKE" : "JUST START TALKING";
@@ -540,23 +557,7 @@ internal sealed class ArcSkin : IOverlaySkin
     // re-expanding returns to maximize mode if that's where it was left.
     // Public (not just the button's own click handler) so OverlayWindow can
     // carry this state across a skin cycle - see its own CycleSkin comment.
-    public void SetCollapsed(bool collapsed)
-    {
-        // Confirmed live as a real bug: collapsing while maximized left
-        // _transcript/_activityLog still marked visible and _root.Width at
-        // MaximizedPanelWidth, so the pill rendered at the wide maximized
-        // width instead of the normal resting one. Un-maximizing first
-        // resets both width and content visibility together, rather than
-        // just patching the width and leaving stale wide content behind
-        // the pill for whenever it next expands.
-        if (collapsed)
-        {
-            SetMaximized(false);
-        }
-
-        _body.IsVisible = !collapsed;
-        _pill.IsVisible = collapsed;
-    }
+    public void SetCollapsed(bool collapsed) => PanelCollapseHelper.SetCollapsed(collapsed, _body, _pill, SetMaximized);
 
     // Widens both this panel's own root and (via OverlayWindow's own
     // IsMaximized polling) the window together, in lockstep - explicit
@@ -697,6 +698,4 @@ internal sealed class ArcSkin : IOverlaySkin
     // constructor) instead of relying on truncation for normal-length
     // activity text - this cutoff only exists as a floor so a truly
     // pathological string doesn't shrink to an illegible sliver.
-    private static string TruncateActivity(string text) =>
-        text.Length > 90 ? string.Concat(text.AsSpan(0, 90), "…") : text;
 }

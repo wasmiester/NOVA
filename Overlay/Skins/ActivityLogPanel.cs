@@ -33,6 +33,7 @@ internal sealed class ActivityLogPanel
     private TextBlock? _activeDots;
     private int _dotsFrame;
     private int _lastCount = -1;
+    private bool _lastEntryWasInProgress;
     private bool _isVisible;
 
     public Control Root => _scroll;
@@ -140,12 +141,23 @@ internal sealed class ActivityLogPanel
 
     public void Update(IReadOnlyList<ActivityEntry> entries)
     {
-        if (!IsVisible || entries.Count == _lastCount)
+        // Confirmed live as a real gap: NovaAssistant settles the last
+        // entry's InProgress flag in place (RecordActivity's own next-entry
+        // path, or FinishLastActivity when a task's activity-driven work
+        // stops without a next entry ever starting) - neither changes the
+        // *count* this was only ever diffing against, so that settling
+        // never actually reached a rebuild here, and the dots this entry's
+        // row keeps animating (see BuildActivityRow implementations - only
+        // an InProgress entry gets a Dots block at all) never stopped, even
+        // once the underlying data correctly showed the task was done.
+        bool lastEntryInProgress = entries.Count > 0 && entries[^1].InProgress;
+        if (!IsVisible || (entries.Count == _lastCount && lastEntryInProgress == _lastEntryWasInProgress))
         {
             return;
         }
 
         _lastCount = entries.Count;
+        _lastEntryWasInProgress = lastEntryInProgress;
         _list.Children.Clear();
         _activeDots = null;
         _dotsFrame = 0;

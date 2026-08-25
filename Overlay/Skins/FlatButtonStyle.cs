@@ -100,5 +100,17 @@ internal static class FlatButtonStyle
             overlay.Background = button.IsPointerOver
                 ? new SolidColorBrush(Color.FromArgb(28, 255, 255, 255))
                 : Brushes.Transparent;
+        // Confirmed live as a real gap: WEB's collapsed-pill button hides
+        // itself (SetCollapsed(false)) from its own Click handler, which
+        // fires off the same press/release gesture that just applied the
+        // dark pressed-tint above. When that interrupts the normal
+        // PointerReleased cleanup, the tint stays baked into this Border
+        // instance - reused, never recreated, across every future show/hide
+        // of the pill - so it reads as a permanent dark overlay rather than
+        // a momentary press effect. PointerCaptureLost is Avalonia's own
+        // catch-all for exactly this (a press cycle that ends some way
+        // other than a clean release over the control), so resetting there
+        // too closes the gap regardless of which control this happens to.
+        button.PointerCaptureLost += (_, _) => overlay.Background = Brushes.Transparent;
     }
 }

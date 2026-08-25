@@ -154,7 +154,7 @@ internal sealed class AuraSkin : IOverlaySkin
         // information rather than showing it. A Viewbox (DownOnly so short
         // text like "listening…" never gets scaled *up*) shrinks the whole
         // line to fit the panel's width instead, so it stays fully legible
-        // just smaller - TruncateActivity below still exists as a safety
+        // just smaller - ActivityTextTruncation still exists as a safety
         // net so a pathological wall of text doesn't shrink to an
         // illegible sliver, just raised well past the old 36-char cutoff.
         _stateLabel = new TextBlock { Text = "listening…", FontSize = 18 };
@@ -248,7 +248,11 @@ internal sealed class AuraSkin : IOverlaySkin
             FontWeight = FontWeight.SemiBold,
             Foreground = Brushes.White,
             BorderThickness = new Thickness(0),
-            Padding = new Thickness(14, 0, 14, 0),
+            // Confirmed live: zero vertical padding with no explicit Height
+            // left this wrapping tight around the bare text line-height,
+            // reading as squished next to _typeInput right beside it - match
+            // that sibling's own vertical padding instead.
+            Padding = new Thickness(14, 6, 14, 6),
             Cursor = new Cursor(StandardCursorType.Hand),
             // Confirmed live: at the narrower ~220px column width the
             // side-by-side maximize layout gives it, the Grid's arrange
@@ -343,7 +347,8 @@ internal sealed class AuraSkin : IOverlaySkin
         _pillText = new TextBlock
         {
             Text = "listening…",
-            FontSize = 13,
+            FontSize = 15,
+            FontWeight = FontWeight.SemiBold,
             Margin = new Thickness(10, 0, 10, 0),
             VerticalAlignment = VerticalAlignment.Center,
             TextTrimming = TextTrimming.CharacterEllipsis,
@@ -356,19 +361,26 @@ internal sealed class AuraSkin : IOverlaySkin
         pillInner.Children.Add(_pillDot);
         pillInner.Children.Add(_pillText);
         pillInner.Children.Add(_pillChevron);
+        // Slimmed from an earlier 60 - confirmed live: with the dot/text/
+        // chevron all vertically centered and none of them taller than
+        // ~24px, a 60px-tall capsule left roughly 18px of dead space above
+        // and below the actual content, reading as bulky rather than a
+        // snug pill. 44 (cornerRadius halved to match, keeping the full
+        // capsule roundness) leaves just enough breathing room around the
+        // now-larger, bolder text above.
         _pill = new Button
         {
             Background = Brushes.Transparent,
             BorderThickness = new Thickness(0),
             Padding = new Thickness(18, 0, 18, 0),
-            Height = 60,
+            Height = 44,
             Margin = new Thickness(18),
             HorizontalAlignment = HorizontalAlignment.Stretch,
             Cursor = new Cursor(StandardCursorType.Hand),
             Content = pillInner,
             IsVisible = false,
         };
-        FlatButtonStyle.Apply(_pill, cornerRadius: 28, stretchContent: true);
+        FlatButtonStyle.Apply(_pill, cornerRadius: 22, stretchContent: true);
         _pill.Click += (_, _) => SetCollapsed(false);
 
         var bodyOrPill = new Grid();
@@ -401,7 +413,7 @@ internal sealed class AuraSkin : IOverlaySkin
             : state.IsSpeaking
                 ? "speaking…"
                 : working
-                    ? TruncateActivity(state.CurrentActivity!).ToLowerInvariant()
+                    ? ActivityTextTruncation.Truncate(state.CurrentActivity!).ToLowerInvariant()
                     : "listening…";
         _stateLabel.Text = stateText;
         _subLabel.Text = state.Asleep ? "press ctrl+alt+space to wake" : "just start talking";
@@ -637,23 +649,7 @@ internal sealed class AuraSkin : IOverlaySkin
 
     // Swaps between the full panel and the slim resting pill - see
     // ArcSkin's own SetCollapsed for the full reasoning.
-    public void SetCollapsed(bool collapsed)
-    {
-        // Confirmed live as a real bug: collapsing while maximized left
-        // _transcript/_activityLog still marked visible and _root.Width at
-        // MaximizedPanelWidth, so the pill rendered at the wide maximized
-        // width instead of the normal resting one. Un-maximizing first
-        // resets both width and content visibility together, rather than
-        // just patching the width and leaving stale wide content behind
-        // the pill for whenever it next expands.
-        if (collapsed)
-        {
-            SetMaximized(false);
-        }
-
-        _layout.IsVisible = !collapsed;
-        _pill.IsVisible = collapsed;
-    }
+    public void SetCollapsed(bool collapsed) => PanelCollapseHelper.SetCollapsed(collapsed, _layout, _pill, SetMaximized);
 
     // Widens both this panel's own root and (via OverlayWindow's own
     // IsMaximized polling) the window together, in lockstep - see
@@ -737,13 +733,4 @@ internal sealed class AuraSkin : IOverlaySkin
         FlatButtonStyle.Apply(button, cornerRadius: 12);
         return button;
     }
-
-    // The narrow panel can't fit a long activity string ("searching memory
-    // for \"...\"") on one line - cap it rather than let it wrap/overflow.
-    // The state label now shrinks to fit via a Viewbox (see the
-    // constructor) instead of relying on truncation for normal-length
-    // activity text - this cutoff only exists as a floor so a truly
-    // pathological string doesn't shrink to an illegible sliver.
-    private static string TruncateActivity(string text) =>
-        text.Length > 90 ? string.Concat(text.AsSpan(0, 90), "…") : text;
 }
