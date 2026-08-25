@@ -1,7 +1,7 @@
 using System;
-using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Text.Json;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Input;
@@ -65,7 +65,7 @@ internal sealed class AvaloniaOverlayWindow : Window
     public AvaloniaOverlayWindow(NovaAssistant assistant, string repoRoot)
     {
         _assistant = assistant;
-        _positionFilePath = Path.Combine(repoRoot, "data", "overlay-position.txt");
+        _positionFilePath = Path.Combine(repoRoot, "data", "overlay-state.json");
 
         WindowDecorations = WindowDecorations.None;
         TransparencyLevelHint = [WindowTransparencyLevel.Transparent];
@@ -411,7 +411,18 @@ internal sealed class AvaloniaOverlayWindow : Window
         return null;
     }
 
-    // File format: left,top,activeSkinIndex,arcAlternateTheme,auraAlternateTheme.
+    // Named fields instead of the old comma-joined "left,top,activeSkinIndex,
+    // arcAlternateTheme,auraAlternateTheme" positional format - that format
+    // needed its own migration comment the moment a field was ever added
+    // (see git history) since every reader had to agree on exact field
+    // count/order with no way to tell "an old save with fewer fields" apart
+    // from "a corrupt one" except by counting. A field added or reordered
+    // here just deserializes as its default instead, no version-sniffing
+    // needed. Not preserving old saves across this format change - same
+    // "the window just won't remember its position this one time" tolerance
+    // SaveState's own catch below already accepts as fine.
+    private sealed record PersistedState(double Left, double Top, int ActiveSkinIndex, bool ArcAlternateTheme, bool AuraAlternateTheme);
+
     private bool TryLoadState(out PixelPoint position, out int activeIndex, out bool arcAlternateTheme, out bool auraAlternateTheme)
     {
         position = default;
@@ -425,31 +436,16 @@ internal sealed class AvaloniaOverlayWindow : Window
                 return false;
             }
 
-            string[] parts = File.ReadAllText(_positionFilePath).Split(',');
-            if (parts.Length < 2 ||
-                !double.TryParse(parts[0], NumberStyles.Float, CultureInfo.InvariantCulture, out double left) ||
-                !double.TryParse(parts[1], NumberStyles.Float, CultureInfo.InvariantCulture, out double top))
+            PersistedState? state = JsonSerializer.Deserialize<PersistedState>(File.ReadAllText(_positionFilePath));
+            if (state is null)
             {
                 return false;
             }
 
-            position = new PixelPoint((int)left, (int)top);
-
-            // parts[2] used to be a numeric skin index in this same format
-            // (unchanged across the WebView2 detour and back) - "arc"/
-            // "web"/"aura" strings from that experiment would land here too
-            // if a save from that version is still on disk; fall back to
-            // index 0 for anything that doesn't parse as an integer.
-            if (parts.Length >= 5)
-            {
-                if (int.TryParse(parts[2], NumberStyles.Integer, CultureInfo.InvariantCulture, out int idx))
-                {
-                    activeIndex = idx;
-                }
-
-                arcAlternateTheme = parts[3] == "1";
-                auraAlternateTheme = parts[4] == "1";
-            }
+            position = new PixelPoint((int)state.Left, (int)state.Top);
+            activeIndex = state.ActiveSkinIndex;
+            arcAlternateTheme = state.ArcAlternateTheme;
+            auraAlternateTheme = state.AuraAlternateTheme;
 
             // Ignore a saved position that's no longer on any screen (e.g. a
             // monitor was unplugged since) rather than opening off-screen.
@@ -460,6 +456,10 @@ internal sealed class AvaloniaOverlayWindow : Window
         {
             return false;
         }
+        catch (JsonException)
+        {
+            return false; // corrupt or pre-JSON-format save - start fresh
+        }
     }
 
     private void SaveState()
@@ -467,15 +467,13 @@ internal sealed class AvaloniaOverlayWindow : Window
         try
         {
             Directory.CreateDirectory(Path.GetDirectoryName(_positionFilePath)!);
-            string arcAlt = _skins.Length > 0 && _skins[0].IsAlternateTheme ? "1" : "0";
-            string auraAlt = _skins.Length > 2 && _skins[2].IsAlternateTheme ? "1" : "0";
-            string content = string.Join(',',
-                Position.X.ToString(CultureInfo.InvariantCulture),
-                Position.Y.ToString(CultureInfo.InvariantCulture),
-                _activeIndex.ToString(CultureInfo.InvariantCulture),
-                arcAlt,
-                auraAlt);
-            File.WriteAllText(_positionFilePath, content);
+            var state = new PersistedState(
+                Position.X,
+                Position.Y,
+                _activeIndex,
+                _skins.Length > 0 && _skins[0].IsAlternateTheme,
+                _skins.Length > 2 && _skins[2].IsAlternateTheme);
+            File.WriteAllText(_positionFilePath, JsonSerializer.Serialize(state));
         }
         catch (IOException)
         {

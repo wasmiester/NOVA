@@ -14,9 +14,9 @@ internal interface IOverlaySkin
     Control Root { get; }
 
     // Called once per DispatcherTimer tick (~130ms) while this skin is
-    // active. Cheap work only (set fields, start/stop Storyboards) -
-    // continuous per-frame drawing (ARC/WEB) happens on the skin's own
-    // CompositionTarget.Rendering subscription, not here.
+    // active. Cheap work only (set fields, update timer-driven animation
+    // state) - continuous per-frame drawing (ARC/WEB's own avatars) happens
+    // on each skin's own DispatcherTimer tick loop, not here.
     void ApplyState(OverlayState state);
 
     // Cycles the skin's own local color theme (gold/cyan for ARC, light/
@@ -76,12 +76,10 @@ internal interface IOverlaySkin
     ConfirmPopupStyle PopupStyle { get; }
 
     // Called when this skin becomes the active one - (re)starts its own
-    // CompositionTarget.Rendering subscription / Storyboards.
+    // avatar's DispatcherTimer tick loop (see ArcFace/WebFace/AuraFace).
     void Activate();
 
-    // Called when switched away from - stops this skin's
-    // CompositionTarget.Rendering subscription and pauses any running
-    // Storyboards. An inactive skin must not keep paying for a frame tick
-    // in the background (see Phase 6 verification in the overlay plan).
+    // Called when switched away from - stops this skin's own avatar timer.
+    // An inactive skin must not keep paying for a tick in the background.
     void Deactivate();
 }

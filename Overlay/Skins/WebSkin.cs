@@ -147,7 +147,7 @@ internal sealed class WebSkin : IOverlaySkin
         // information rather than showing it. A Viewbox (DownOnly so short
         // text like LISTENING never gets scaled *up*) shrinks the whole
         // line to fit the panel's width instead, so it stays fully legible
-        // just smaller - TruncateActivity below still exists as a safety
+        // just smaller - ActivityTextTruncation still exists as a safety
         // net so a pathological wall of text doesn't shrink to an
         // illegible sliver, just raised well past the old 36-char cutoff.
         _stateLabel = new TextBlock { Text = "LISTENING", Foreground = TextBrush, FontFamily = WebFont, FontWeight = FontWeight.Bold, FontSize = 16 };
@@ -433,7 +433,7 @@ internal sealed class WebSkin : IOverlaySkin
             : state.IsSpeaking
                 ? "SPEAKING"
                 : working
-                    ? TruncateActivity(state.CurrentActivity!).ToUpperInvariant()
+                    ? ActivityTextTruncation.Truncate(state.CurrentActivity!).ToUpperInvariant()
                     : "LISTENING";
         _stateLabel.Text = stateText;
         _subLabel.Text = state.Asleep ? "PRESS CTRL+ALT+SPACE TO WAKE" : "JUST START TALKING";
@@ -520,23 +520,7 @@ internal sealed class WebSkin : IOverlaySkin
 
     // Swaps between the full panel and the slim resting pill - see
     // ArcSkin's own SetCollapsed for the full reasoning.
-    public void SetCollapsed(bool collapsed)
-    {
-        // Confirmed live as a real bug: collapsing while maximized left
-        // _transcript/_activityLog still marked visible and _root.Width at
-        // MaximizedPanelWidth, so the pill rendered at the wide maximized
-        // width instead of the normal resting one. Un-maximizing first
-        // resets both width and content visibility together, rather than
-        // just patching the width and leaving stale wide content behind
-        // the pill for whenever it next expands.
-        if (collapsed)
-        {
-            SetMaximized(false);
-        }
-
-        _layout.IsVisible = !collapsed;
-        _pill.IsVisible = collapsed;
-    }
+    public void SetCollapsed(bool collapsed) => PanelCollapseHelper.SetCollapsed(collapsed, _layout, _pill, SetMaximized);
 
     // Widens both this panel's own root and (via OverlayWindow's own
     // IsMaximized polling) the window together, in lockstep - see
@@ -699,13 +683,4 @@ internal sealed class WebSkin : IOverlaySkin
         FlatButtonStyle.Apply(button, cornerRadius: 0, pixelShadowColor: EdgeBrush.Color);
         return button;
     }
-
-    // The narrow panel can't fit a long activity string ("searching memory
-    // for \"...\"") on one line - cap it rather than let it wrap/overflow.
-    // The state label now shrinks to fit via a Viewbox (see the
-    // constructor) instead of relying on truncation for normal-length
-    // activity text - this cutoff only exists as a floor so a truly
-    // pathological string doesn't shrink to an illegible sliver.
-    private static string TruncateActivity(string text) =>
-        text.Length > 90 ? string.Concat(text.AsSpan(0, 90), "…") : text;
 }
