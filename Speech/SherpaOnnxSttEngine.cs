@@ -114,7 +114,7 @@ internal sealed class SherpaOnnxSttEngine : ISttEngine
     // words specifically when fed dead silence like that. Low-amplitude
     // random noise instead - a standard "avoid feeding a model an
     // unnaturally perfect signal" trick - well below
-    // AudioCapturePipeline's own speech-RMS thresholds (~0.0065-0.0077),
+    // AudioCapturePipeline's own speech-RMS thresholds (~0.0077-0.0081),
     // so it's silence in every practical sense, just not exactly zero.
     private const float PaddingNoiseAmplitude = 0.0005f;
 

@@ -76,6 +76,23 @@ internal sealed class AudioCapturePipeline : IDisposable
     // higher system output volume), so treat this as a complementary
     // safety margin, not the primary fix.
     private const int BargeInSustainMs = 220;
+    // Confirmed live as a real, distinct gap from the incident BargeInSustainMs
+    // above was raised for: that protection only ever applies once IsSpeaking
+    // already reads true, but IsSpeaking itself only flips the instant the TTS
+    // engine's own PlaybackStarted event fires - AEC's adaptive filter hasn't
+    // had a single real sample of *this* utterance's audio to converge against
+    // yet at that exact moment, so residual echo is at its worst right at
+    // onset, and a chunk landing in that gap can still be checked against the
+    // fresh-utterance path's lower SpeechRmsThreshold (with no echo-aware
+    // sustain check at all - FreshUtteranceSustainMs exists to filter sharp
+    // transients like a keyboard click, not a continuous echo). Observed live:
+    // a "2 plus 2 is 4" fragment (Nova's own reply) turning up merged into the
+    // next transcribed utterance. This blanket-suppresses classification for a
+    // short window right after speech starts, rather than trying to tune the
+    // threshold/sustain constants further - genuine fast barge-ins aren't
+    // meaningfully hurt by it, since BargeInSustainMs already delays real
+    // commitment by up to 220ms of its own regardless.
+    private const int EchoWarmupMs = 200;
     // A sharp, brief transient (a keyboard click, a knock) can cross
     // SpeechRmsThreshold just as easily as real speech, but a fresh
     // utterance start had no sustain check at all - unlike the barge-in
@@ -114,8 +131,11 @@ internal sealed class AudioCapturePipeline : IDisposable
     // clipping) - rules out capture-pipeline corruption as the cause of the
     // "Hey Nova" garbling. Off now that its question is answered; flip back
     // on if a future capture-side issue needs the same kind of real
-    // amplitude evidence instead of another guess.
-    private const bool DebugLogOnsetProfile = false;
+    // amplitude evidence instead of another guess. static readonly, not
+    // const - a compile-time-constant false makes the compiler prove the
+    // guarded block unreachable and warn on it (CS0162) every single build,
+    // which a flag meant to be flipped back on later shouldn't cost.
+    private static readonly bool DebugLogOnsetProfile = false;
 
     private readonly NovaAssistant _assistant;
 
@@ -149,6 +169,8 @@ internal sealed class AudioCapturePipeline : IDisposable
     // captured audio from during that window, not discarded once confirmed.
     private readonly List<float[]> _freshUtteranceCandidateChunks = [];
     private bool _userIsSpeaking;
+    private bool _wasNovaSpeaking;
+    private DateTime? _novaSpeakingSince;
     // True when the utterance currently being captured started while Nova
     // was busy but not speaking (a silent tool-execution stretch) - decides
     // whether the finished clip is dispatched as a fresh task or as a
@@ -222,9 +244,18 @@ internal sealed class AudioCapturePipeline : IDisposable
         float rms = AudioDsp.ComputeRms(chunk);
 
         bool novaCurrentlySpeaking = _assistant.IsSpeaking;
+        if (novaCurrentlySpeaking && !_wasNovaSpeaking)
+        {
+            _novaSpeakingSince = DateTime.UtcNow;
+        }
+
+        _wasNovaSpeaking = novaCurrentlySpeaking;
+        bool withinEchoWarmup = novaCurrentlySpeaking && _novaSpeakingSince is { } speakingSince
+            && (DateTime.UtcNow - speakingSince).TotalMilliseconds < EchoWarmupMs;
+
         float activeThreshold = novaCurrentlySpeaking ? BargeInRmsThreshold : SpeechRmsThreshold;
 
-        if (rms >= activeThreshold)
+        if (rms >= activeThreshold && !withinEchoWarmup)
         {
             if (novaCurrentlySpeaking)
             {
@@ -306,15 +337,24 @@ internal sealed class AudioCapturePipeline : IDisposable
                 // another round of static analysis.
                 StatusLog.WriteLine($"[fresh-utterance classification: IsBusy={_capturingInterjection}, IsSpeaking={_assistant.IsSpeaking}]");
 
-                // Pre-roll only makes sense seeding a *fresh* utterance
-                // while genuinely idle - while she's mid-task, recent quiet
-                // audio isn't useful lead-in for an interjection the same way.
-                if (!_capturingInterjection)
+                // Confirmed live as a real gap, not a deliberate exclusion:
+                // this used to only seed pre-roll for a genuinely fresh
+                // utterance, skipping it for an interjection on the theory
+                // that "recent quiet audio isn't useful lead-in" while she's
+                // mid-task. That doesn't actually hold - this whole branch
+                // only runs when novaCurrentlySpeaking is false (the barge-
+                // in-over-her-voice case above is separate, and correctly
+                // excludes pre-roll since it'd hold her own trailing audio -
+                // see its own comment), so _preRollBuffer here only ever
+                // holds genuine ambient silence, identical in kind whether
+                // an interjection is starting or a fresh utterance is.
+                // Onset-clipping doesn't care which one it is - an
+                // interjection's first word is just as vulnerable as a
+                // fresh utterance's, and skipping pre-roll left every
+                // interjection with strictly less protection against it.
+                foreach (float[] preRollChunk in _preRollBuffer)
                 {
-                    foreach (float[] preRollChunk in _preRollBuffer)
-                    {
-                        _utteranceBuffer.AddRange(preRollChunk);
-                    }
+                    _utteranceBuffer.AddRange(preRollChunk);
                 }
 
                 _preRollBuffer.Clear();

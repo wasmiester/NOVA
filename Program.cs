@@ -258,6 +258,18 @@ internal static class Program
                 .WithLanguage("en")
                 .WithNoContext() // this WhisperProcessor is reused across turns - don't let one
                                   // turn's transcription bias decoding on the next
+                // A static vocabulary/spelling hint, not prior-transcript
+                // context - doesn't conflict with WithNoContext above (that
+                // guards against one *turn's own decoded text* leaking into
+                // the next; this is a fixed hint that persists deliberately).
+                // "Nova" being consistently mis-heard at utterance starts
+                // (confirmed live - see the sherpa-onnx hotword-biasing
+                // investigation nearby in this file) was never actually
+                // tried against Whisper itself, only sherpa, where it hit an
+                // unrelated vocab-file-format blocker. Cheap, untried lever
+                // worth a real shot before writing this off as an acoustic-
+                // ambiguity limit on Whisper specifically too.
+                .WithPrompt("Nova, what's my schedule today? Nova, check my email and calendar.")
                 .WithThreads(Environment.ProcessorCount)
                 .Build();
             stt = new WhisperSttEngine(whisperProcessor);
