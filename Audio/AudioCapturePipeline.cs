@@ -102,6 +102,14 @@ internal sealed class AudioCapturePipeline : IDisposable
     // one 10-20ms chunk even for a short word; a click doesn't.
     private const int FreshUtteranceSustainMs = 80;
     private const int SilenceEndMs = 2800; // raised from 2000 - was cutting in before a normal mid-sentence pause finished
+    // A fresh question tolerates a generous mid-sentence pause (the reasoning
+    // SilenceEndMs above was raised for), but an interjection into an
+    // already-running task is typically a short phrase ("stop", "wait,
+    // actually...") - the same 2.8s wait before it's even considered
+    // finished was the single biggest source of latency between "I said
+    // something" and any visible reaction, confirmed live as feeling like a
+    // flat halt rather than Nova just being slow to respond.
+    private const int InterjectionSilenceEndMs = 1000;
     private const int MinUtteranceMs = 400;
     // ~300ms was tuned against Whisper, a batch model that tolerates a
     // slightly-clipped word start fine. The streaming sherpa-onnx engine
@@ -412,7 +420,8 @@ internal sealed class AudioCapturePipeline : IDisposable
         }
 
         _utteranceBuffer.AddRange(chunk);
-        if ((DateTime.UtcNow - _lastVoiceAt).TotalMilliseconds < SilenceEndMs)
+        int silenceEndMs = _capturingInterjection ? InterjectionSilenceEndMs : SilenceEndMs;
+        if ((DateTime.UtcNow - _lastVoiceAt).TotalMilliseconds < silenceEndMs)
         {
             return;
         }
